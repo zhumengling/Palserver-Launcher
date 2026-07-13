@@ -48,6 +48,7 @@ function App() {
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupProgress, setSetupProgress] = useState({ message: '准备开始', percent: 0 });
   const statusRefreshSequence = useRef(0);
+  const instancesRef = useRef<main.ServerInstance[]>([]);
 
   const selected = useMemo(() => config.instances?.find((item) => item.id === config.selectedId), [config.instances, config.selectedId]);
   const selectedScope = selected?.id || globalScope;
@@ -62,16 +63,29 @@ function App() {
   }, []);
   const refreshStatuses = useCallback(async (instances?: main.ServerInstance[]) => {
     const sequence = ++statusRefreshSequence.current;
-    const targets = instances || config.instances || [];
+    const targets = instances ?? instancesRef.current;
     const pairs = await Promise.all(targets.map(async (instance) => {
       try { return [instance.id, await API.GetStatus(instance.id)] as const; }
       catch { return [instance.id, emptyStatus] as const; }
     }));
     if (sequence === statusRefreshSequence.current) setStatuses(Object.fromEntries(pairs));
-  }, [config.instances]);
+  }, []);
 
   useEffect(() => { reloadConfig(); }, [reloadConfig]);
-  useEffect(() => { refreshStatuses(); const timer = window.setInterval(() => refreshStatuses(), 3000); return () => window.clearInterval(timer); }, [refreshStatuses]);
+  useEffect(() => {
+    instancesRef.current = config.instances || [];
+    void refreshStatuses(config.instances || []);
+  }, [config.instances, refreshStatuses]);
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try { await refreshStatuses(); }
+      finally { if (!cancelled) timer = window.setTimeout(poll, 3000); }
+    };
+    void poll();
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [refreshStatuses]);
   useEffect(() => EventsOn('setup:progress', (payload: { message: string; percent: number }) => setSetupProgress(payload)), []);
 
   async function run(label: string, action: () => Promise<unknown>, success = '操作完成') {

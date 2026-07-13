@@ -138,6 +138,22 @@ func TestServerProcessPatternDoesNotMatchSiblingDirectoryPrefixes(t *testing.T) 
 	}
 }
 
+func TestFrontendStatusPollingDoesNotOverlapSlowStatusRequests(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	if strings.Contains(source, "window.setInterval(() => refreshStatuses(), 3000)") {
+		t.Fatal("status polling starts a new refresh every three seconds even when the previous request is still running")
+	}
+	for _, expected := range []string{"await refreshStatuses()", "window.setTimeout(poll, 3000)"} {
+		if !strings.Contains(source, expected) {
+			t.Fatalf("serial status polling is missing %q", expected)
+		}
+	}
+}
+
 func TestSafeJoinRejectsEscapes(t *testing.T) {
 	root := t.TempDir()
 	if _, err := safeJoin(root, "..", "outside"); err == nil {
