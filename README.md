@@ -14,6 +14,20 @@ Palworld 专用服务器的一体化 Windows 启动器，使用 Wails 2、React 
 - Nexus UE4SS 服务器插件目录、版本检查和 ZIP 安装更新
 - Palworld 1.0 服务器设置中文编辑器
 
+## 界面预览
+
+### 服务器概览
+
+![服务器概览](docs/screenshots/server-overview.png)
+
+### 在线玩家管理
+
+![在线玩家管理](docs/screenshots/player-management.png)
+
+### 自动化与维护计划
+
+![自动化与维护计划](docs/screenshots/automation.png)
+
 ## 构建
 
 开发环境需要 Go、Node.js、Wails CLI 和 WebView2：
