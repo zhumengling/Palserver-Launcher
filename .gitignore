@@ -1,0 +1,24 @@
+# Build outputs and generated packages
+build/bin/
+build/windows/installer/tmp/
+frontend/dist/
+frontend/wailsjs/
+frontend/package.json.md5
+tmp/
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Local development files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.test
+coverage/

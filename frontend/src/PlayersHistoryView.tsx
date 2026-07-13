@@ -1,0 +1,14 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Ban, Check, Edit3, RefreshCw, Search, Shield, UserRoundSearch } from 'lucide-react';
+import * as API from '../wailsjs/go/main/App';
+import { main } from '../wailsjs/go/models';
+
+export default function PlayersHistoryView({ id, run }: { id: string; run: Function }) {
+  const [items, setItems] = useState<main.PlayerHistoryEntry[]>([]); const [query, setQuery] = useState('');
+  const refresh = useCallback(() => API.ListPlayerHistory(id).then(setItems), [id]);
+  useEffect(() => { refresh(); const timer = setInterval(refresh, 10000); return () => clearInterval(timer); }, [refresh]);
+  const filtered = useMemo(() => items.filter((item) => `${item.name}${item.userId}${item.playerId}${item.aliases?.join(' ')}${item.note}`.toLowerCase().includes(query.toLowerCase())), [items, query]);
+  return <section className="panel"><div className="panel-heading"><div><h2>玩家档案</h2><p>在线记录、历史别名、白名单与离线封禁</p></div><div className="toolbar"><label className="search"><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索档案"/></label><button className="ghost" onClick={refresh}><RefreshCw size={14}/></button></div></div>
+    <div className="table-wrap"><table><thead><tr><th>玩家</th><th>最后在线</th><th>访问</th><th>IP</th><th>访问控制</th><th/></tr></thead><tbody>{filtered.map((item) => <tr key={`${item.userId}-${item.playerId}`}><td><strong>{item.name || item.aliases?.[0] || '未知玩家'}</strong><small>{item.userId || item.playerId} · {(item.aliases || []).join(' / ')}</small></td><td>{item.online ? <span className="badge success">在线</span> : new Date(item.lastSeen).toLocaleString()}</td><td>{item.visits}</td><td><code>{item.lastIp || '-'}</code></td><td><span className={`badge ${item.whitelisted ? 'success' : ''}`}>{item.whitelisted ? '白名单' : '未批准'}</span>{item.banned && <span className="badge danger-badge">已封禁</span>}</td><td className="row-actions"><button className="ghost" title="白名单" onClick={() => run('whitelist', async () => { await API.SetPlayerWhitelist(id, item.userId, !item.whitelisted); await refresh(); }, '白名单已更新')}>{item.whitelisted ? <Check size={14}/> : <Shield size={14}/>}</button><button className="ghost" title="备注" onClick={() => { const note = prompt('玩家备注', item.note || ''); if (note !== null) run('player-note', async () => { await API.SetPlayerNote(id, item.userId, note); await refresh(); }, '备注已保存'); }}><Edit3 size={14}/></button><button className="icon-button danger-icon" title="封禁" onClick={() => confirm('封禁这个历史玩家？') && run('historical-ban', async () => { await API.BanHistoricalPlayer(id, item.userId); await refresh(); }, '玩家已封禁')}><Ban size={14}/></button></td></tr>)}</tbody></table>{!filtered.length && <div className="empty"><UserRoundSearch size={24}/><span>还没有玩家历史</span></div>}</div>
+  </section>;
+}
