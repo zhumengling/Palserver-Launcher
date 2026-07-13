@@ -48,6 +48,10 @@ func (a *App) WriteWorldSettings(id, content string) error {
 	if status.Running {
 		return errors.New("stop the server before changing world settings")
 	}
+	return writeWorldSettingsFile(instance, content)
+}
+
+func writeWorldSettingsFile(instance ServerInstance, content string) error {
 	path, err := worldSettingsPath(instance)
 	if err != nil {
 		return err

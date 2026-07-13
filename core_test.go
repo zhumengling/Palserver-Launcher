@@ -1,10 +1,15 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +30,111 @@ func TestRCONPacketLayout(t *testing.T) {
 	}
 	if payload := strings.TrimRight(string(packet[12:]), "\x00"); payload != "Info" {
 		t.Fatalf("payload = %q, want Info", payload)
+	}
+}
+
+func TestRCONSuccessfulCommandWithoutResponseDoesNotSurfaceTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port, err := strconv.Atoi(strings.TrimPrefix(listener.Addr().String(), "127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandReceived := make(chan string, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _, _ = readRCONPacket(conn)
+		_, _ = conn.Write(rconPacket(1, 2, ""))
+		_, _, command, readErr := readRCONPacket(conn)
+		if readErr == nil {
+			commandReceived <- command
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		buffer := make([]byte, 1)
+		_, _ = conn.Read(buffer)
+	}()
+
+	response, err := sendRCONWithTimeout(ServerInstance{RCONPort: port, AdminPassword: "secret"}, "Info", 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("successful fire-and-forget command returned an error: %v", err)
+	}
+	if response != "" {
+		t.Fatalf("response = %q, want empty response", response)
+	}
+	select {
+	case command := <-commandReceived:
+		if command != "Info" {
+			t.Fatalf("command = %q, want Info", command)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RCON command was not received")
+	}
+}
+
+func TestRCONProbeStopsAfterAuthentication(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port, err := strconv.Atoi(strings.TrimPrefix(listener.Addr().String(), "127.0.0.1:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	extraPacket := make(chan bool, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _, _ = readRCONPacket(conn)
+		_, _ = conn.Write(rconPacket(1, 2, ""))
+		_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		buffer := make([]byte, 1)
+		n, _ := conn.Read(buffer)
+		extraPacket <- n > 0
+	}()
+
+	if err := probeRCONWithTimeout(ServerInstance{RCONPort: port, AdminPassword: "secret"}, 100*time.Millisecond); err != nil {
+		t.Fatalf("authenticated RCON probe failed: %v", err)
+	}
+	select {
+	case gotExtraPacket := <-extraPacket:
+		if gotExtraPacket {
+			t.Fatal("RCON health probe sent a command after authentication")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RCON probe connection did not close")
+	}
+}
+
+func TestRCONAvailabilityUsesTheServerListenerWithoutSendingCommands(t *testing.T) {
+	if !rconListenerMatchesProcess(true, 42, 42) {
+		t.Fatal("matching RCON listener was not reported as available")
+	}
+	if rconListenerMatchesProcess(true, 42, 99) {
+		t.Fatal("listener owned by another process was reported as available")
+	}
+	if rconListenerMatchesProcess(false, 42, 42) {
+		t.Fatal("stopped server was reported as RCON available")
+	}
+}
+
+func TestServerProcessPatternDoesNotMatchSiblingDirectoryPrefixes(t *testing.T) {
+	pattern := serverProcessRootPattern(filepath.Join("D:\\PalworldServers\\Server1", "PalServer.exe"))
+	if !strings.HasSuffix(pattern, "Server1\\*") {
+		t.Fatalf("server process pattern = %q, want a directory-bound wildcard", pattern)
+	}
+	if matched, err := filepath.Match(pattern, filepath.Join("D:\\PalworldServers\\Server10", "PalServer.exe")); err != nil || matched {
+		t.Fatalf("sibling server directory matched pattern %q: matched=%v err=%v", pattern, matched, err)
 	}
 }
 
@@ -167,6 +277,22 @@ func TestManagedInstanceAvoidsPortsUsedByExistingServers(t *testing.T) {
 			t.Fatalf("assigned invalid port %d", port)
 		}
 		used[port] = true
+	}
+}
+
+func TestServerInstancePortsMustBeUniqueAcrossInstances(t *testing.T) {
+	existing := []ServerInstance{{ID: "server-a", Name: "一号服", PublicPort: 8211, QueryPort: 27015, RCONPort: 25575, RESTPort: 8212}}
+	candidate := ServerInstance{ID: "server-b", Name: "二号服", PublicPort: 8211, QueryPort: 27016, RCONPort: 25576, RESTPort: 8213}
+	if err := validateServerInstancePorts(candidate, existing); err == nil || !strings.Contains(err.Error(), "8211") {
+		t.Fatalf("duplicate server port was accepted: %v", err)
+	}
+	candidate.PublicPort = 8214
+	if err := validateServerInstancePorts(candidate, existing); err != nil {
+		t.Fatalf("unique server ports were rejected: %v", err)
+	}
+	self := existing[0]
+	if err := validateServerInstancePorts(self, existing); err != nil {
+		t.Fatalf("editing an existing instance conflicted with itself: %v", err)
 	}
 }
 
@@ -481,6 +607,202 @@ func TestGamePresetsAndTemporaryEventExpiry(t *testing.T) {
 	}
 }
 
+func TestRunningWorldSettingsChangeWarnsOneMinuteBeforeRestart(t *testing.T) {
+	steps := []string{}
+	var waited time.Duration
+	err := executeWorldSettingsChange(
+		true,
+		func() error { steps = append(steps, "announce"); return nil },
+		func(delay time.Duration) { waited = delay; steps = append(steps, "wait") },
+		func() error { steps = append(steps, "stop"); return nil },
+		func() error { steps = append(steps, "write"); return nil },
+		func() error { steps = append(steps, "start"); return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited != time.Minute {
+		t.Fatalf("warning delay = %s, want 1m", waited)
+	}
+	if got := strings.Join(steps, ","); got != "announce,wait,stop,write,start" {
+		t.Fatalf("settings change order = %s", got)
+	}
+}
+
+func TestWorldSettingsChangeAbortsWhenRestartWarningCannotBeSent(t *testing.T) {
+	steps := []string{}
+	err := executeWorldSettingsChange(
+		true,
+		func() error { steps = append(steps, "announce"); return errors.New("offline") },
+		func(time.Duration) { steps = append(steps, "wait") },
+		func() error { steps = append(steps, "stop"); return nil },
+		func() error { steps = append(steps, "write"); return nil },
+		func() error { steps = append(steps, "start"); return nil },
+	)
+	if err == nil {
+		t.Fatal("settings change continued without sending the restart warning")
+	}
+	if got := strings.Join(steps, ","); got != "announce" {
+		t.Fatalf("settings change continued after announcement failure: %s", got)
+	}
+}
+
+func TestStoppedWorldSettingsChangeWritesWithoutRestartDelay(t *testing.T) {
+	steps := []string{}
+	err := executeWorldSettingsChange(
+		false,
+		func() error { steps = append(steps, "announce"); return nil },
+		func(time.Duration) { steps = append(steps, "wait") },
+		func() error { steps = append(steps, "stop"); return nil },
+		func() error { steps = append(steps, "write"); return nil },
+		func() error { steps = append(steps, "start"); return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(steps, ","); got != "write" {
+		t.Fatalf("stopped-server settings change order = %s", got)
+	}
+}
+
+func TestGameEventLifecycleActivatesPendingEventAfterServerStarts(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.Local)
+	pending := ActiveGameEvent{State: "pending-start", DurationMinutes: 120}
+	active := activateGameEvent(pending, now)
+	if active.State != "active" || active.StartedAt != now.UnixMilli() || active.EndsAt != now.Add(2*time.Hour).UnixMilli() {
+		t.Fatalf("activated event = %#v", active)
+	}
+	legacy := ActiveGameEvent{StartedAt: now.UnixMilli(), EndsAt: now.Add(time.Hour).UnixMilli()}
+	if normalizedGameEventState(legacy) != "active" {
+		t.Fatal("legacy active event state was not preserved")
+	}
+}
+
+func TestFRPConfigBuildsUDPGameTunnelAndOptionalManagementTunnels(t *testing.T) {
+	instance := ServerInstance{PublicPort: 8211, QueryPort: 27015, RCONPort: 25575, RESTPort: 8212}
+	settings := FrpSettings{
+		ServerAddress: "frps.example.com", ServerPort: 7000, ProxyName: "pal-main", RemoteGamePort: 8211,
+		QueryEnabled: true, RemoteQueryPort: 27015, RCONEnabled: true, RemoteRCONPort: 25575,
+	}
+	config, err := buildFrpcConfig(instance, settings, "secret-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`serverAddr = "frps.example.com"`, `serverPort = 7000`, `auth.token = "secret-token"`,
+		`name = "pal-main-game"`, `type = "udp"`, `localPort = 8211`, `remotePort = 8211`,
+		`name = "pal-main-query"`, `localPort = 27015`, `remotePort = 27015`,
+		`name = "pal-main-rcon"`, `type = "tcp"`, `localPort = 25575`, `remotePort = 25575`,
+	} {
+		if !strings.Contains(config, expected) {
+			t.Fatalf("FRP config missing %q:\n%s", expected, config)
+		}
+	}
+	if strings.Contains(config, "-rest\"") {
+		t.Fatalf("disabled REST tunnel was emitted:\n%s", config)
+	}
+}
+
+func TestFRPSettingsRejectUnsafeOrConflictingValues(t *testing.T) {
+	valid := FrpSettings{ServerAddress: "frp.example.com", ServerPort: 7000, ProxyName: "pal-main", RemoteGamePort: 8211}
+	if err := validateFrpSettings(valid); err != nil {
+		t.Fatalf("valid FRP settings rejected: %v", err)
+	}
+	invalidName := valid
+	invalidName.ProxyName = "pal main; rm"
+	if validateFrpSettings(invalidName) == nil {
+		t.Fatal("unsafe FRP proxy name was accepted")
+	}
+	conflict := valid
+	conflict.QueryEnabled = true
+	conflict.RemoteQueryPort = conflict.RemoteGamePort
+	if validateFrpSettings(conflict) == nil {
+		t.Fatal("conflicting UDP remote ports were accepted")
+	}
+}
+
+func TestFRPRuntimeRejectsOnlyActiveRemotePortConflictsOnTheSameFRPS(t *testing.T) {
+	running := []frpRuntimeClaim{{
+		ServerID: "server-a", ServerName: "一号服",
+		Settings: FrpSettings{ServerAddress: "frps.example.com", ServerPort: 7000, ProxyName: "pal-a", RemoteGamePort: 8211, RCONEnabled: true, RemoteRCONPort: 25575},
+	}}
+	candidate := frpRuntimeClaim{
+		ServerID: "server-b", ServerName: "二号服",
+		Settings: FrpSettings{ServerAddress: "FRPS.EXAMPLE.COM", ServerPort: 7000, ProxyName: "pal-b", RemoteGamePort: 8211},
+	}
+	if err := validateFrpRuntimeClaim(candidate, running); err == nil || !strings.Contains(err.Error(), "8211/UDP") {
+		t.Fatalf("active UDP conflict was accepted: %v", err)
+	}
+	candidate.Settings.RemoteGamePort = 25575
+	if err := validateFrpRuntimeClaim(candidate, running); err != nil {
+		t.Fatalf("same numeric port with a different protocol was rejected: %v", err)
+	}
+	candidate.Settings.RemoteGamePort = 8211
+	candidate.Settings.ServerAddress = "other.example.com"
+	if err := validateFrpRuntimeClaim(candidate, running); err != nil {
+		t.Fatalf("same remote port on another FRPS was rejected: %v", err)
+	}
+	if err := validateFrpRuntimeClaim(candidate, nil); err != nil {
+		t.Fatalf("saved but stopped FRP configuration blocked startup: %v", err)
+	}
+}
+
+func TestFRPRuntimeRejectsDuplicateProxyNamesOnTheSameFRPS(t *testing.T) {
+	running := []frpRuntimeClaim{{ServerID: "server-a", ServerName: "一号服", Settings: FrpSettings{ServerAddress: "frps.example.com", ServerPort: 7000, ProxyName: "pal-main", RemoteGamePort: 8211}}}
+	candidate := frpRuntimeClaim{ServerID: "server-b", ServerName: "二号服", Settings: FrpSettings{ServerAddress: "frps.example.com", ServerPort: 7000, ProxyName: "pal-main", RemoteGamePort: 8212}}
+	if err := validateFrpRuntimeClaim(candidate, running); err == nil || !strings.Contains(err.Error(), "代理名称") {
+		t.Fatalf("duplicate proxy name was accepted: %v", err)
+	}
+}
+
+func TestFRPReleaseSelectionUsesWindowsAMD64Archive(t *testing.T) {
+	release := githubRelease{TagName: "v0.70.0", Assets: []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+		Digest             string `json:"digest"`
+		Size               int64  `json:"size"`
+	}{
+		{Name: "frp_0.70.0_linux_amd64.tar.gz", BrowserDownloadURL: "https://example.test/linux"},
+		{Name: "frp_0.70.0_windows_amd64.zip", BrowserDownloadURL: "https://example.test/windows", Digest: "sha256:abc"},
+	}}
+	name, url, digest, err := selectFRPReleaseAsset(release)
+	if err != nil || name != "frp_0.70.0_windows_amd64.zip" || url != "https://example.test/windows" || digest != "sha256:abc" {
+		t.Fatalf("selected FRP asset = %q, %q, %q, %v", name, url, digest, err)
+	}
+}
+
+func TestFRPInstallerDownloadsLatestWindowsClient(t *testing.T) {
+	if os.Getenv("PALSERVER_FRP_INTEGRATION") != "1" {
+		t.Skip("set PALSERVER_FRP_INTEGRATION=1 to verify the live FRP release")
+	}
+	status, err := (&App{}).InstallFrp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(status.Path, "-v").CombinedOutput()
+	if err != nil {
+		t.Fatalf("frpc -v: %v: %s", err, output)
+	}
+	if !status.Installed || status.Version == "" || !strings.Contains(string(output), strings.TrimPrefix(status.Version, "v")) {
+		t.Fatalf("installed FRP status = %#v, version output = %q", status, output)
+	}
+	config, err := buildFrpcConfig(
+		ServerInstance{PublicPort: 8211, QueryPort: 27015, RCONPort: 25575, RESTPort: 8212},
+		FrpSettings{ServerAddress: "127.0.0.1", ServerPort: 7000, ProxyName: "pal-test", RemoteGamePort: 8211, QueryEnabled: true, RemoteQueryPort: 27015},
+		"test-token",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "frpc.toml")
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(status.Path, "verify", "-c", configPath).CombinedOutput(); err != nil {
+		t.Fatalf("frpc config verification: %v: %s", err, output)
+	}
+}
+
 func TestDiscordWebhookValidationRedactionAndEncryption(t *testing.T) {
 	webhook := "https://discord.com/api/webhooks/123456/secret-token"
 	if err := validateDiscordWebhook(webhook); err != nil {
@@ -527,6 +849,37 @@ func TestSaveInspectorAssetSelectionAndChecksum(t *testing.T) {
 	}
 	if err := verifySHA256([]byte("palworld"), "sha256:deadbeef"); err == nil {
 		t.Fatal("invalid sidecar checksum accepted")
+	}
+}
+
+func TestExecutableExtractionReplacesAnExistingVersion(t *testing.T) {
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	entry, err := writer.Create("frp_0.70.0_windows_amd64/frpc.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("new-version")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "frp.zip")
+	if err := os.WriteFile(archivePath, archive.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	executable := filepath.Join(destination, "frpc.exe")
+	if err := os.WriteFile(executable, []byte("old-version"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractNamedExecutable(archivePath, destination, "frpc.exe"); err != nil {
+		t.Fatalf("replace existing executable: %v", err)
+	}
+	data, err := os.ReadFile(executable)
+	if err != nil || string(data) != "new-version" {
+		t.Fatalf("extracted executable = %q, %v", data, err)
 	}
 }
 

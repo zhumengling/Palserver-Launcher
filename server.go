@@ -41,24 +41,36 @@ func newHiddenPowerShell(query string) *exec.Cmd {
 	return command
 }
 
+func rconListenerMatchesProcess(running bool, processID, listenerOwnerPID int) bool {
+	return running && processID > 0 && listenerOwnerPID == processID
+}
+
+func serverProcessRootPattern(executable string) string {
+	return filepath.Join(filepath.Dir(filepath.Clean(executable)), "*")
+}
+
 func serverStatus(instance ServerInstance) (RuntimeStatus, error) {
 	status := RuntimeStatus{}
-	query := `$target='` + strings.ReplaceAll(filepath.Clean(instance.Executable), "'", "''") + `'; Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('PalServer.exe','PalServer-Win64-Shipping-Cmd.exe','PalServer-Win64-Shipping.exe') -and ($_.ExecutablePath -eq $target -or $_.ExecutablePath -like ((Split-Path $target -Parent)+'*')) } | Select-Object -First 1 ProcessId,ExecutablePath | ConvertTo-Json -Compress`
+	target := strings.ReplaceAll(filepath.Clean(instance.Executable), "'", "''")
+	rootPattern := strings.ReplaceAll(serverProcessRootPattern(instance.Executable), "'", "''")
+	query := `$target='` + target + `';$rootPattern='` + rootPattern + `'; Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('PalServer.exe','PalServer-Win64-Shipping-Cmd.exe','PalServer-Win64-Shipping.exe') -and ($_.ExecutablePath -eq $target -or $_.ExecutablePath -like $rootPattern) } | Select-Object -First 1 ProcessId,ExecutablePath | ConvertTo-Json -Compress`
 	out, _ := newHiddenPowerShell(query).Output()
 	if len(strings.TrimSpace(string(out))) > 0 {
 		var info processInfo
 		if json.Unmarshal(out, &info) == nil && info.ProcessID > 0 {
 			status.Running = true
 			status.PID = info.ProcessID
-			metricQuery := fmt.Sprintf(`$p=Get-Process -Id %d -ErrorAction SilentlyContinue; if($p){[pscustomobject]@{CPU=$p.CPU;WorkingSet64=$p.WorkingSet64;StartTime=$p.StartTime.ToFileTimeUtc()}|ConvertTo-Json -Compress}`, info.ProcessID)
+			metricQuery := fmt.Sprintf(`$p=Get-Process -Id %d -ErrorAction SilentlyContinue; if($p){$rconOwner=Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | Where-Object {$_.OwningProcess -eq %d} | Select-Object -First 1 -ExpandProperty OwningProcess; [pscustomobject]@{CPU=$p.CPU;WorkingSet64=$p.WorkingSet64;StartTime=$p.StartTime.ToFileTimeUtc();RCONListenerPID=[int]$rconOwner}|ConvertTo-Json -Compress}`, info.ProcessID, instance.RCONPort, info.ProcessID)
 			metricOut, _ := newHiddenPowerShell(metricQuery).Output()
 			var metrics struct {
 				CPU, WorkingSet64 float64
 				StartTime         int64
+				RCONListenerPID   int
 			}
 			if json.Unmarshal(metricOut, &metrics) == nil {
 				status.CPU = metrics.CPU
 				status.MemoryMB = metrics.WorkingSet64 / 1024 / 1024
+				status.RCONAvailable = rconListenerMatchesProcess(status.Running, status.PID, metrics.RCONListenerPID)
 				if metrics.StartTime > 0 {
 					unix := (metrics.StartTime - 116444736000000000) / 10000000
 					status.Uptime = time.Now().Unix() - unix
@@ -76,9 +88,6 @@ func serverStatus(instance ServerInstance) (RuntimeStatus, error) {
 			status.FrameTime = number(metrics["serverframetime"])
 			status.Players = int(number(metrics["currentplayernum"]))
 			status.MaxPlayers = int(number(metrics["maxplayernum"]))
-		}
-		if _, err := sendRCON(instance, "Info"); err == nil {
-			status.RCONAvailable = true
 		}
 	}
 	return status, nil
@@ -106,6 +115,8 @@ func (a *App) GetStatus(id string) (RuntimeStatus, error) {
 }
 
 func (a *App) StartServer(id string) error {
+	a.serverStartMu.Lock()
+	defer a.serverStartMu.Unlock()
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -113,6 +124,18 @@ func (a *App) StartServer(id string) error {
 	status, _ := serverStatus(instance)
 	if status.Running {
 		return errors.New("server is already running")
+	}
+	runningInstances := make([]ServerInstance, 0)
+	for _, other := range a.store.Snapshot().Instances {
+		if other.ID == instance.ID {
+			continue
+		}
+		if otherStatus, statusErr := serverStatus(other); statusErr == nil && otherStatus.Running {
+			runningInstances = append(runningInstances, other)
+		}
+	}
+	if err := validateServerInstancePorts(instance, runningInstances); err != nil {
+		return fmt.Errorf("无法启动服务器：%w", err)
 	}
 	a.setGuardianSuppressed(id, false)
 	if _, err := os.Stat(instance.Executable); err != nil {
@@ -157,6 +180,7 @@ func (a *App) StartServer(id string) error {
 		_ = logFile.Close()
 		return err
 	}
+	a.onServerStarted(id, time.Now())
 	a.scheduleAutoRestart(instance)
 	runtime.EventsEmit(a.ctx, "server:started", id, cmd.Process.Pid)
 	a.notifyDiscord(id, "start", "服务器已启动", instance.Name)

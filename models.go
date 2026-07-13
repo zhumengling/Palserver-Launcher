@@ -50,6 +50,7 @@ type AppConfig struct {
 	PlayerHistory    []PlayerHistoryEntry   `json:"playerHistory"`
 	ActiveEvents     []ActiveGameEvent      `json:"activeEvents"`
 	DiscordWebhooks  []DiscordWebhookConfig `json:"discordWebhooks"`
+	FrpConfigs       []FrpConfig            `json:"frpConfigs"`
 	SelectedID       string                 `json:"selectedId"`
 	Language         string                 `json:"language"`
 }
@@ -93,10 +94,53 @@ type ActiveGameEvent struct {
 	ServerID         string            `json:"serverId"`
 	EventID          string            `json:"eventId"`
 	Name             string            `json:"name"`
+	State            string            `json:"state"`
+	DurationMinutes  int               `json:"durationMinutes"`
 	StartedAt        int64             `json:"startedAt"`
 	EndsAt           int64             `json:"endsAt"`
 	OriginalSettings string            `json:"originalSettings"`
 	Values           map[string]string `json:"values"`
+}
+
+type FrpConfig struct {
+	ServerID        string `json:"serverId"`
+	ServerAddress   string `json:"serverAddress"`
+	ServerPort      int    `json:"serverPort"`
+	EncryptedToken  string `json:"encryptedToken"`
+	ProxyName       string `json:"proxyName"`
+	RemoteGamePort  int    `json:"remoteGamePort"`
+	QueryEnabled    bool   `json:"queryEnabled"`
+	RemoteQueryPort int    `json:"remoteQueryPort"`
+	RCONEnabled     bool   `json:"rconEnabled"`
+	RemoteRCONPort  int    `json:"remoteRconPort"`
+	RESTEnabled     bool   `json:"restEnabled"`
+	RemoteRESTPort  int    `json:"remoteRestPort"`
+	AutoStart       bool   `json:"autoStart"`
+}
+
+type FrpSettings struct {
+	ServerID        string `json:"serverId"`
+	ServerAddress   string `json:"serverAddress"`
+	ServerPort      int    `json:"serverPort"`
+	TokenConfigured bool   `json:"tokenConfigured"`
+	ProxyName       string `json:"proxyName"`
+	RemoteGamePort  int    `json:"remoteGamePort"`
+	QueryEnabled    bool   `json:"queryEnabled"`
+	RemoteQueryPort int    `json:"remoteQueryPort"`
+	RCONEnabled     bool   `json:"rconEnabled"`
+	RemoteRCONPort  int    `json:"remoteRconPort"`
+	RESTEnabled     bool   `json:"restEnabled"`
+	RemoteRESTPort  int    `json:"remoteRestPort"`
+	AutoStart       bool   `json:"autoStart"`
+}
+
+type FrpStatus struct {
+	Installed bool        `json:"installed"`
+	Version   string      `json:"version"`
+	Path      string      `json:"path"`
+	Running   bool        `json:"running"`
+	PID       int         `json:"pid"`
+	Settings  FrpSettings `json:"settings"`
 }
 
 type PlayerHistoryEntry struct {

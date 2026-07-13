@@ -2,8 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
+
+const worldSettingsRestartWarning = "服务器设置将在 1 分钟后应用，服务器将自动重启。请保存进度并前往安全位置。"
 
 var builtInGamePresets = []GamePreset{
 	{ID: "casual", Name: "休闲", Description: "更快成长与更低惩罚", Values: map[string]string{"ExpRate": "2", "PalCaptureRate": "1.5", "CollectionDropRate": "1.5", "DeathPenalty": "None"}},
@@ -29,7 +32,48 @@ func gamePresetByID(id string) (GamePreset, bool) {
 }
 
 func eventExpired(event ActiveGameEvent, now time.Time) bool {
-	return event.EndsAt > 0 && event.EndsAt <= now.UnixMilli()
+	return normalizedGameEventState(event) == "active" && event.EndsAt > 0 && event.EndsAt <= now.UnixMilli()
+}
+
+func normalizedGameEventState(event ActiveGameEvent) string {
+	if event.State != "" {
+		return event.State
+	}
+	if event.StartedAt > 0 || event.EndsAt > 0 {
+		return "active"
+	}
+	return "pending-start"
+}
+
+func activateGameEvent(event ActiveGameEvent, now time.Time) ActiveGameEvent {
+	duration := event.DurationMinutes
+	if duration < 1 {
+		duration = 1
+	}
+	event.State = "active"
+	event.DurationMinutes = duration
+	event.StartedAt = now.UnixMilli()
+	event.EndsAt = now.Add(time.Duration(duration) * time.Minute).UnixMilli()
+	return event
+}
+
+func executeWorldSettingsChange(running bool, announce func() error, wait func(time.Duration), stop func() error, write func() error, start func() error) error {
+	if running {
+		if err := announce(); err != nil {
+			return fmt.Errorf("无法发送重启通知，设置未应用：%w", err)
+		}
+		wait(time.Minute)
+		if err := stop(); err != nil {
+			return err
+		}
+	}
+	if err := write(); err != nil {
+		return err
+	}
+	if running {
+		return start()
+	}
+	return nil
 }
 
 func (a *App) ListGamePresets() []GamePreset { return append([]GamePreset(nil), builtInGamePresets...) }
@@ -40,9 +84,10 @@ func (a *App) ApplyGamePreset(serverID, presetID string) error {
 	if !ok {
 		return errors.New("unknown game preset")
 	}
-	return a.applyWorldSettingsManaged(serverID, func(content string) (string, error) {
+	_, err := a.applyWorldSettingsManaged(serverID, func(content string) (string, error) {
 		return mergeWorldSettingValues(content, preset.Values)
 	})
+	return err
 }
 
 func (a *App) StartGameEvent(serverID, eventID string, durationMinutes int, customValues map[string]string) (ActiveGameEvent, error) {
@@ -61,18 +106,22 @@ func (a *App) StartGameEvent(serverID, eventID string, durationMinutes int, cust
 	if err != nil {
 		return ActiveGameEvent{}, err
 	}
-	if err := a.applyWorldSettingsManaged(serverID, func(content string) (string, error) {
+	appliedToRunningServer, err := a.applyWorldSettingsManaged(serverID, func(content string) (string, error) {
 		return mergeWorldSettingValues(content, definition.Values)
-	}); err != nil {
+	})
+	if err != nil {
 		return ActiveGameEvent{}, err
 	}
-	now := time.Now()
-	event := ActiveGameEvent{ServerID: serverID, EventID: definition.ID, Name: definition.Name, StartedAt: now.UnixMilli(), EndsAt: now.Add(time.Duration(durationMinutes) * time.Minute).UnixMilli(), OriginalSettings: original, Values: definition.Values}
+	event := ActiveGameEvent{ServerID: serverID, EventID: definition.ID, Name: definition.Name, State: "pending-start", DurationMinutes: durationMinutes, OriginalSettings: original, Values: definition.Values}
+	if appliedToRunningServer {
+		event = activateGameEvent(event, time.Now())
+	}
 	return event, a.store.SaveActiveEvent(event)
 }
 
 func (a *App) GetActiveGameEvent(serverID string) ActiveGameEvent {
 	event, _ := a.store.ActiveEvent(serverID)
+	event.State = normalizedGameEventState(event)
 	return event
 }
 
@@ -81,7 +130,8 @@ func (a *App) StopGameEvent(serverID string) error {
 	if !ok {
 		return errors.New("no active game event")
 	}
-	if err := a.applyWorldSettingsManaged(serverID, func(string) (string, error) { return event.OriginalSettings, nil }); err != nil {
+	_, err := a.applyWorldSettingsManaged(serverID, func(string) (string, error) { return event.OriginalSettings, nil })
+	if err != nil {
 		return err
 	}
 	return a.store.DeleteActiveEvent(serverID)
@@ -95,36 +145,58 @@ func (a *App) pollGameEvents(now time.Time) {
 	}
 }
 
-func (a *App) applyWorldSettingsManaged(serverID string, transform func(string) (string, error)) error {
+func (a *App) applyWorldSettingsManaged(serverID string, transform func(string) (string, error)) (bool, error) {
 	if !a.tryBeginOperation(serverID, "settings") {
-		return errors.New("server is busy")
+		return false, errors.New("server is busy")
 	}
 	defer a.endOperation(serverID)
 	instance, err := a.store.Find(serverID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	status, _ := serverStatus(instance)
-	wasRunning := status.Running
-	if wasRunning {
-		_, _ = sendRCON(instance, "Save")
-		if err := a.restartStopOnly(serverID); err != nil {
-			return err
-		}
-	}
 	content, err := a.ReadWorldSettings(serverID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	updated, err := transform(content)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := a.WriteWorldSettings(serverID, updated); err != nil {
-		return err
+	err = executeWorldSettingsChange(
+		status.Running,
+		func() error { return a.announceWorldSettingsRestart(instance) },
+		time.Sleep,
+		func() error { return a.restartStopOnly(serverID) },
+		func() error { return writeWorldSettingsFile(instance, updated) },
+		func() error { return a.StartServer(serverID) },
+	)
+	if err != nil {
+		return false, err
 	}
-	if wasRunning {
-		return a.StartServer(serverID)
+	return status.Running, nil
+}
+
+func (a *App) announceWorldSettingsRestart(instance ServerInstance) error {
+	if _, err := restPost(instance, "/announce", map[string]any{"message": worldSettingsRestartWarning}); err == nil {
+		return nil
 	}
-	return nil
+	if _, err := sendRCON(instance, "Broadcast Server settings will apply in 1 minute. The server will restart automatically."); err == nil {
+		return nil
+	}
+	return errors.New("REST API and RCON are unavailable")
+}
+
+func (a *App) onServerStarted(serverID string, now time.Time) {
+	event, ok := a.store.ActiveEvent(serverID)
+	if !ok {
+		return
+	}
+	switch normalizedGameEventState(event) {
+	case "pending-start":
+		_ = a.store.SaveActiveEvent(activateGameEvent(event, now))
+	case "pending-restore":
+		// Compatibility for activities queued by earlier launcher versions.
+		_ = a.store.DeleteActiveEvent(serverID)
+	}
 }

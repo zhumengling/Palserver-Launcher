@@ -18,6 +18,7 @@ type App struct {
 	ctx                context.Context
 	store              *Store
 	processMu          sync.Mutex
+	serverStartMu      sync.Mutex
 	operationMu        sync.Mutex
 	expectedStops      map[string]bool
 	restartCancels     map[string]chan struct{}
@@ -29,6 +30,8 @@ type App struct {
 	guardianSuppressed map[string]bool
 	serverModUpdateMu  sync.RWMutex
 	serverModUpdates   map[string]nexusModInfo
+	frpProcesses       map[string]*exec.Cmd
+	frpClaims          map[string]frpRuntimeClaim
 }
 
 func NewApp() *App {
@@ -39,16 +42,20 @@ func NewApp() *App {
 	return &App{
 		store: store, expectedStops: map[string]bool{}, restartCancels: map[string]chan struct{}{}, operations: map[string]string{},
 		guardianFailures: map[string]int{}, guardianRestarts: map[string][]time.Time{}, guardianLastCheck: map[string]time.Time{}, guardianSuppressed: map[string]bool{},
-		serverModUpdates: map[string]nexusModInfo{},
+		serverModUpdates: map[string]nexusModInfo{}, frpProcesses: map[string]*exec.Cmd{}, frpClaims: map[string]frpRuntimeClaim{},
 	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.startMaintenanceLoop()
+	go a.startAutomaticFrpClients()
 }
 
-func (a *App) shutdown(context.Context) { a.stopMaintenanceLoop() }
+func (a *App) shutdown(context.Context) {
+	a.stopMaintenanceLoop()
+	a.stopAllFrpClients()
+}
 
 func (a *App) GetConfig() AppConfig { return a.store.Snapshot() }
 
@@ -60,6 +67,9 @@ func (a *App) SaveInstance(instance ServerInstance) (ServerInstance, error) {
 		return ServerInstance{}, err
 	}
 	instance = withDefaults(instance)
+	if err := validateServerInstancePorts(instance, a.store.Snapshot().Instances); err != nil {
+		return ServerInstance{}, err
+	}
 	if err := syncInstanceWorldSettings(instance); err != nil {
 		return ServerInstance{}, fmt.Errorf("sync server settings: %w", err)
 	}
@@ -102,6 +112,7 @@ func (a *App) DeleteInstance(id string, deleteFiles bool) error {
 	if err != nil {
 		return err
 	}
+	_ = a.StopFrp(id)
 	if deleteFiles {
 		status, _ := serverStatus(instance)
 		if status.Running {

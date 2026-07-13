@@ -148,6 +148,13 @@ func (s *Store) DeleteServerData(id string) error {
 		}
 	}
 	s.config.DiscordWebhooks = webhooks
+	frpConfigs := s.config.FrpConfigs[:0]
+	for _, config := range s.config.FrpConfigs {
+		if config.ServerID != id {
+			frpConfigs = append(frpConfigs, config)
+		}
+	}
+	s.config.FrpConfigs = frpConfigs
 	return s.saveLocked()
 }
 
@@ -384,6 +391,30 @@ func (s *Store) DiscordWebhook(serverID string) (DiscordWebhookConfig, bool) {
 		}
 	}
 	return DiscordWebhookConfig{}, false
+}
+
+func (s *Store) SaveFrpConfig(config FrpConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.config.FrpConfigs {
+		if s.config.FrpConfigs[index].ServerID == config.ServerID {
+			s.config.FrpConfigs[index] = config
+			return s.saveLocked()
+		}
+	}
+	s.config.FrpConfigs = append(s.config.FrpConfigs, config)
+	return s.saveLocked()
+}
+
+func (s *Store) FrpConfig(serverID string) (FrpConfig, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, config := range s.config.FrpConfigs {
+		if config.ServerID == serverID {
+			return config, true
+		}
+	}
+	return FrpConfig{}, false
 }
 
 func newID() string {

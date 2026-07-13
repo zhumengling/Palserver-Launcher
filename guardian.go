@@ -95,6 +95,9 @@ func (a *App) pollGuardian(now time.Time) {
 		settings := parseWorldSettingValues(content)
 		restEnabled := settingEnabled(settings["RESTAPIEnabled"])
 		rconEnabled := settingEnabled(settings["RCONEnabled"])
+		if rconEnabled && status.RCONAvailable {
+			status.RCONAvailable = probeRCON(instance) == nil
+		}
 		if guardianServiceHealthy(status, restEnabled, rconEnabled) {
 			a.processMu.Lock()
 			a.guardianFailures[instance.ID] = 0

@@ -82,24 +82,30 @@ func readRCONPacket(conn net.Conn) (int32, int32, string, error) {
 	return id, typ, payload, nil
 }
 
-func sendRCON(instance ServerInstance, command string) (string, error) {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", instance.RCONPort), 3*time.Second)
-	if err != nil {
-		return "", err
+func openAuthenticatedRCON(instance ServerInstance, timeout time.Duration) (net.Conn, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
 	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	dialTimeout := min(timeout, 3*time.Second)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", instance.RCONPort), dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if _, err := conn.Write(rconPacket(1, 3, instance.AdminPassword)); err != nil {
-		return "", err
+		_ = conn.Close()
+		return nil, err
 	}
 	authenticated := false
 	for i := 0; i < 2; i++ {
 		id, _, _, readErr := readRCONPacket(conn)
 		if readErr != nil {
-			return "", readErr
+			_ = conn.Close()
+			return nil, readErr
 		}
 		if id == -1 {
-			return "", errors.New("RCON authentication failed")
+			_ = conn.Close()
+			return nil, errors.New("RCON authentication failed")
 		}
 		if id == 1 {
 			authenticated = true
@@ -107,8 +113,31 @@ func sendRCON(instance ServerInstance, command string) (string, error) {
 		}
 	}
 	if !authenticated {
-		return "", errors.New("RCON authentication response missing")
+		_ = conn.Close()
+		return nil, errors.New("RCON authentication response missing")
 	}
+	return conn, nil
+}
+
+func probeRCONWithTimeout(instance ServerInstance, timeout time.Duration) error {
+	conn, err := openAuthenticatedRCON(instance, timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func probeRCON(instance ServerInstance) error {
+	return probeRCONWithTimeout(instance, 3*time.Second)
+}
+
+func sendRCONWithTimeout(instance ServerInstance, command string, timeout time.Duration) (string, error) {
+	conn, err := openAuthenticatedRCON(instance, timeout)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if _, err := conn.Write(rconPacket(2, 2, command)); err != nil {
 		return "", err
 	}
@@ -119,6 +148,12 @@ func sendRCON(instance ServerInstance, command string) (string, error) {
 			if result.Len() > 0 {
 				break
 			}
+			if timeoutErr, ok := readErr.(net.Error); ok && timeoutErr.Timeout() {
+				// Palworld 1.0 executes some native RCON commands without sending a
+				// response packet. Authentication and a successful command write are
+				// therefore sufficient for fire-and-forget commands.
+				return "", nil
+			}
 			return "", readErr
 		}
 		if id == 2 {
@@ -127,6 +162,10 @@ func sendRCON(instance ServerInstance, command string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(result.String()), nil
+}
+
+func sendRCON(instance ServerInstance, command string) (string, error) {
+	return sendRCONWithTimeout(instance, command, 5*time.Second)
 }
 
 func (a *App) SendRCON(id, command string) (string, error) {

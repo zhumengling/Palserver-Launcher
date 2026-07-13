@@ -1,10 +1,10 @@
-import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Archive, Ban, BellRing, Box, CalendarClock, CheckCircle2, ChevronRight, CircleOff, Clock3,
   ClipboardList, Copy, Cpu, DatabaseBackup, Download, FileCode2, FolderOpen,
   Gauge, Globe2, HardDrive, History, LayoutDashboard, Map, MemoryStick, Package,
   Play, PlugZap, Plus, RefreshCw, Save, Search, Send, Server, Settings,
-  Shield, Square, Terminal, Trash2, Upload, UserCog, Users, X, Zap,
+  Network, Shield, Square, Terminal, Trash2, Upload, UserCog, Users, X, Zap,
   Wrench,
 } from 'lucide-react';
 import * as API from '../wailsjs/go/main/App';
@@ -19,72 +19,111 @@ import EventsView from './EventsView';
 import SaveInspectorView from './SaveInspectorView';
 import BackupsView from './BackupsView';
 import GroupedModsView from './ModsView';
+import FrpView from './FrpView';
 
 const GameCatalog = lazy(() => import('./GameCatalog'));
 
-type View = 'overview' | 'performance' | 'console' | 'players' | 'history' | 'automation' | 'events' | 'settings' | 'backups' | 'plugins' | 'mods' | 'map' | 'tools' | 'save-inspector' | 'diagnostics';
+type View = 'overview' | 'performance' | 'console' | 'players' | 'history' | 'automation' | 'events' | 'settings' | 'backups' | 'plugins' | 'mods' | 'map' | 'tools' | 'save-inspector' | 'frp' | 'diagnostics';
 
 const emptyStatus = new main.RuntimeStatus({ running: false, pid: 0, players: 0, maxPlayers: 0, fps: 0, frameTime: 0, uptime: 0, cpu: 0, memoryMb: 0, restAvailable: false, rconAvailable: false, version: '' });
+const globalScope = '__global__';
+type Notice = { type: 'ok' | 'error'; text: string };
 const defaultInstance = () => new main.ServerInstance({ id: '', name: '我的帕鲁服务器', rootPath: '', executable: '', steamCmdPath: '', publicIp: '', publicPort: 8211, queryPort: 27015, rconPort: 25575, restPort: 8212, adminPassword: '', serverPassword: '', community: true, performanceMode: true, iconId: 'SheepBall', autoRestartHours: 0, crashRestart: false, guardianEnabled: false, guardianFailureThreshold: 3, guardianCheckSeconds: 60, guardianMaxRestarts: 3, whitelistEnforced: false, backupRetentionMode: 'tiered', backupRetentionCount: 30, backupRetentionDays: 30, updateOnlyWhenEmpty: true, updateWarnMinutes: 5 });
 
 const nav = [
   ['overview', '概览', LayoutDashboard], ['performance', '性能监控', Cpu], ['console', '控制台', Terminal], ['players', '在线玩家', Users],
   ['history', '玩家档案', History], ['automation', '自动化', Clock3], ['events', '活动与通知', BellRing],
   ['settings', '服务器设置', Settings], ['backups', '存档备份', DatabaseBackup], ['plugins', '插件', PlugZap],
-  ['mods', '模组', Package], ['map', '在线地图', Map], ['tools', '维护工具', Wrench], ['save-inspector', '存档浏览', CalendarClock], ['diagnostics', '网络诊断', Activity],
+  ['mods', '模组', Package], ['map', '在线地图', Map], ['tools', '维护工具', Wrench], ['save-inspector', '存档浏览', CalendarClock], ['frp', 'FRP 客户端', Network], ['diagnostics', '网络诊断', Activity],
 ] as const;
 
 function App() {
   const [config, setConfig] = useState<main.AppConfig>(new main.AppConfig({ instances: [], selectedId: '', language: 'zh-CN' }));
   const [view, setView] = useState<View>('overview');
-  const [status, setStatus] = useState(emptyStatus);
-  const [busy, setBusy] = useState('');
-  const [notice, setNotice] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+  const [statuses, setStatuses] = useState<Record<string, main.RuntimeStatus>>({});
+  const [busyByServer, setBusyByServer] = useState<Record<string, string>>({});
+  const [noticeByServer, setNoticeByServer] = useState<Record<string, Notice | null>>({});
   const [editor, setEditor] = useState<main.ServerInstance | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [setupBusy, setSetupBusy] = useState(false);
   const [setupProgress, setSetupProgress] = useState({ message: '准备开始', percent: 0 });
+  const statusRefreshSequence = useRef(0);
 
-  const selected = useMemo(() => config.instances?.find((item) => item.id === config.selectedId), [config]);
+  const selected = useMemo(() => config.instances?.find((item) => item.id === config.selectedId), [config.instances, config.selectedId]);
+  const selectedScope = selected?.id || globalScope;
+  const status = selected ? statuses[selected.id] || emptyStatus : emptyStatus;
+  const busy = busyByServer[selectedScope] || busyByServer[globalScope] || '';
+  const notice = noticeByServer[selectedScope] || noticeByServer[globalScope] || null;
 
-  const reloadConfig = useCallback(async () => setConfig(await API.GetConfig()), []);
-  const refreshStatus = useCallback(async () => {
-    if (!selected) { setStatus(emptyStatus); return; }
-    try { setStatus(await API.GetStatus(selected.id)); } catch { setStatus(emptyStatus); }
-  }, [selected]);
+  const reloadConfig = useCallback(async () => {
+    const next = await API.GetConfig();
+    setConfig(next);
+    return next;
+  }, []);
+  const refreshStatuses = useCallback(async (instances?: main.ServerInstance[]) => {
+    const sequence = ++statusRefreshSequence.current;
+    const targets = instances || config.instances || [];
+    const pairs = await Promise.all(targets.map(async (instance) => {
+      try { return [instance.id, await API.GetStatus(instance.id)] as const; }
+      catch { return [instance.id, emptyStatus] as const; }
+    }));
+    if (sequence === statusRefreshSequence.current) setStatuses(Object.fromEntries(pairs));
+  }, [config.instances]);
 
   useEffect(() => { reloadConfig(); }, [reloadConfig]);
-  useEffect(() => { refreshStatus(); const timer = window.setInterval(refreshStatus, 3000); return () => window.clearInterval(timer); }, [refreshStatus]);
+  useEffect(() => { refreshStatuses(); const timer = window.setInterval(() => refreshStatuses(), 3000); return () => window.clearInterval(timer); }, [refreshStatuses]);
   useEffect(() => EventsOn('setup:progress', (payload: { message: string; percent: number }) => setSetupProgress(payload)), []);
 
   async function run(label: string, action: () => Promise<unknown>, success = '操作完成') {
-    setBusy(label); setNotice(null);
-    try { await action(); setNotice({ type: 'ok', text: success }); await reloadConfig(); await refreshStatus(); }
-    catch (error) { setNotice({ type: 'error', text: String(error) }); }
-    finally { setBusy(''); }
+    const scope = selected?.id || globalScope;
+    setBusyByServer((current) => ({ ...current, [scope]: label }));
+    setNoticeByServer((current) => ({ ...current, [scope]: null }));
+    try {
+      await action();
+      setNoticeByServer((current) => ({ ...current, [scope]: { type: 'ok', text: success } }));
+      const next = await reloadConfig();
+      await refreshStatuses(next.instances || []);
+    } catch (error) {
+      setNoticeByServer((current) => ({ ...current, [scope]: { type: 'error', text: String(error) } }));
+    } finally {
+      setBusyByServer((current) => { const next = { ...current }; delete next[scope]; return next; });
+    }
   }
 
   async function selectServer(id: string) { await API.SelectInstance(id); await reloadConfig(); setView('overview'); }
 
   async function quickSetup(name: string, installRoot: string) {
     setSetupProgress({ message: '正在准备安装', percent: 0 });
-    setBusy('quick-setup'); setNotice(null);
+    setSetupBusy(true);
+    setNoticeByServer((current) => ({ ...current, [globalScope]: null }));
     try {
       const instance = await API.QuickSetup(name, installRoot);
       await API.SelectInstance(instance.id);
-      await reloadConfig(); setSetupOpen(false); setView('overview');
-      setNotice({ type: 'ok', text: '服务器已经自动安装并配置完成' });
-    } catch (error) { setNotice({ type: 'error', text: String(error) }); }
-    finally { setBusy(''); await refreshStatus(); }
+      const next = await reloadConfig(); setSetupOpen(false); setView('overview');
+      setNoticeByServer((current) => ({ ...current, [instance.id]: { type: 'ok', text: '服务器已经自动安装并配置完成' } }));
+      await refreshStatuses(next.instances || []);
+    } catch (error) {
+      setNoticeByServer((current) => ({ ...current, [globalScope]: { type: 'error', text: String(error) } }));
+    } finally { setSetupBusy(false); }
   }
 
   async function importExisting() {
     const root = await API.ChooseDirectory();
     if (!root) return;
-    await run('import-existing', async () => {
+    setBusyByServer((current) => ({ ...current, [globalScope]: 'import-existing' }));
+    setNoticeByServer((current) => ({ ...current, [globalScope]: null }));
+    try {
       const instance = await API.ImportExistingServer(root);
       await API.SelectInstance(instance.id);
+      const next = await reloadConfig();
       setView('overview');
-    }, '已有服务器已导入');
+      setNoticeByServer((current) => ({ ...current, [instance.id]: { type: 'ok', text: '已有服务器已导入' } }));
+      await refreshStatuses(next.instances || []);
+    } catch (error) {
+      setNoticeByServer((current) => ({ ...current, [globalScope]: { type: 'error', text: String(error) } }));
+    } finally {
+      setBusyByServer((current) => { const next = { ...current }; delete next[globalScope]; return next; });
+    }
   }
 
   return (
@@ -94,7 +133,7 @@ function App() {
         <div className="server-list-label"><span>服务器</span><button title="一键安装新服务器" onClick={() => setSetupOpen(true)}><Plus size={16}/></button></div>
         <div className="server-list">
           {config.instances?.map((item) => <button className={`server-item ${item.id === config.selectedId ? 'active' : ''}`} key={item.id} onClick={() => selectServer(item.id)}>
-            <img className="server-icon" src={`/server-icons/${item.iconId || 'SheepBall'}.png`} alt=""/><span className={`status-dot ${item.id === config.selectedId && status.running ? 'online' : ''}`}/><span>{item.name}</span><ChevronRight size={14}/>
+            <img className="server-icon" src={`/server-icons/${item.iconId || 'SheepBall'}.png`} alt=""/><span className={`status-dot ${statuses[item.id]?.running ? 'online' : ''}`}/><span className="server-name">{item.name}</span><ChevronRight size={14}/>
           </button>)}
           {!config.instances?.length && <button className="empty-server" onClick={() => setSetupOpen(true)}><Plus size={18}/>一键安装服务器</button>}
         </div>
@@ -107,36 +146,37 @@ function App() {
           <div><p className="eyebrow">{nav.find(([id]) => id === view)?.[1] || '概览'}</p><h1>{selected?.name || 'Palserver Launcher'}</h1></div>
           {selected && <div className="command-cluster">
             <div className={`server-state ${status.running ? 'online' : ''}`}><span/>{status.running ? `运行中 · PID ${status.pid}` : '已停止'}</div>
-            <button className="icon-button" title="刷新" onClick={refreshStatus}><RefreshCw size={17}/></button>
+            <button className="icon-button" title="刷新" onClick={() => refreshStatuses()}><RefreshCw size={17}/></button>
             {status.running ? <button className="danger" onClick={() => run('stop', () => API.StopServer(selected.id), '已发送关服指令')}><Square size={15}/>停止</button>
               : <button className="primary" onClick={() => run('start', () => API.StartServer(selected.id), '服务器已启动')}><Play size={15}/>启动</button>}
           </div>}
         </header>
 
-        {notice && <div className={`notice ${notice.type}`}><span>{notice.type === 'ok' ? <CheckCircle2 size={16}/> : <CircleOff size={16}/>}</span>{notice.text}<button onClick={() => setNotice(null)}><X size={14}/></button></div>}
+        {notice && <div className={`notice ${notice.type}`}><span>{notice.type === 'ok' ? <CheckCircle2 size={16}/> : <CircleOff size={16}/>}</span>{notice.text}<button onClick={() => setNoticeByServer((current) => ({ ...current, [selectedScope]: null, [globalScope]: null }))}><X size={14}/></button></div>}
         <section className="workspace">
           {!selected ? <Welcome onCreate={() => setSetupOpen(true)} onImport={importExisting}/> : <>
-            {view === 'overview' && <Overview instance={selected} status={status} busy={busy} onEdit={() => setEditor(new main.ServerInstance(selected))} onRun={run} onDeleted={async () => { await reloadConfig(); setView('overview'); }}/>}
-            {view === 'performance' && <PerformanceView status={status}/>}
-            {view === 'console' && <ConsoleView id={selected.id} run={run}/>}
-            {view === 'players' && <PlayersView id={selected.id} run={run}/>}
-            {view === 'history' && <PlayersHistoryView id={selected.id} run={run}/>}
-            {view === 'automation' && <AutomationView instance={selected} run={run} onChanged={reloadConfig}/>}
-            {view === 'events' && <EventsView id={selected.id} run={run}/>}
-            {view === 'settings' && <WorldSettingsView id={selected.id} running={status.running} run={run}/>}
-            {view === 'backups' && <BackupsView instance={selected} running={status.running} run={run} onChanged={reloadConfig}/>}
-            {view === 'plugins' && <PluginsView id={selected.id} running={status.running} run={run}/>}
-            {view === 'mods' && <GroupedModsView id={selected.id} running={status.running} run={run}/>}
-            {view === 'map' && <MapView id={selected.id}/>}
-            {view === 'tools' && <ToolsView instance={selected} running={status.running} run={run} onChanged={reloadConfig}/>}
-            {view === 'save-inspector' && <SaveInspectorView id={selected.id} run={run}/>}
-            {view === 'diagnostics' && <DiagnosticsView id={selected.id}/>}
+            {view === 'overview' && <Overview key={selected.id} instance={selected} status={status} busy={busy} onEdit={() => setEditor(new main.ServerInstance(selected))} onRun={run} onDeleted={async () => { await reloadConfig(); setView('overview'); }}/>}
+            {view === 'performance' && <PerformanceView key={selected.id} status={status}/>}
+            {view === 'console' && <ConsoleView key={selected.id} id={selected.id} run={run}/>}
+            {view === 'players' && <PlayersView key={selected.id} id={selected.id} run={run}/>}
+            {view === 'history' && <PlayersHistoryView key={selected.id} id={selected.id} run={run}/>}
+            {view === 'automation' && <AutomationView key={selected.id} instance={selected} run={run} onChanged={async () => { await reloadConfig(); }}/>}
+            {view === 'events' && <EventsView key={selected.id} id={selected.id} run={run}/>}
+            {view === 'settings' && <WorldSettingsView key={selected.id} id={selected.id} running={status.running} run={run}/>}
+            {view === 'backups' && <BackupsView key={selected.id} instance={selected} running={status.running} run={run} onChanged={async () => { await reloadConfig(); }}/>}
+            {view === 'plugins' && <PluginsView key={selected.id} id={selected.id} running={status.running} run={run}/>}
+            {view === 'mods' && <GroupedModsView key={selected.id} id={selected.id} running={status.running} run={run}/>}
+            {view === 'map' && <MapView key={selected.id} id={selected.id}/>}
+            {view === 'tools' && <ToolsView key={selected.id} instance={selected} running={status.running} run={run} onChanged={async () => { await reloadConfig(); }}/>}
+            {view === 'save-inspector' && <SaveInspectorView key={selected.id} id={selected.id} run={run}/>}
+            {view === 'frp' && <FrpView key={selected.id} instance={selected} run={run}/>}
+            {view === 'diagnostics' && <DiagnosticsView key={selected.id} id={selected.id}/>}
           </>}
         </section>
       </main>
-      {editor && <InstanceDialog value={editor} onClose={() => setEditor(null)} onSaved={async () => { setEditor(null); await reloadConfig(); }}/>}
-      {setupOpen && <QuickSetupDialog installing={busy === 'quick-setup'} progress={setupProgress} onClose={() => !busy && setSetupOpen(false)} onInstall={quickSetup}/>}
-      {busy && busy !== 'quick-setup' && <div className="busy-layer"><RefreshCw className="spin" size={22}/><span>正在执行...</span></div>}
+      {editor && <InstanceDialog value={editor} onClose={() => setEditor(null)} onSaved={async () => { setEditor(null); const next = await reloadConfig(); await refreshStatuses(next.instances || []); }}/>}
+      {setupOpen && <QuickSetupDialog installing={setupBusy} progress={setupProgress} onClose={() => !setupBusy && setSetupOpen(false)} onInstall={quickSetup}/>}
+      {busy && <div className="busy-layer"><RefreshCw className="spin" size={22}/><span>正在执行...</span></div>}
     </div>
   );
 }

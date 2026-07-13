@@ -63,6 +63,46 @@ func assignAvailablePorts(instance ServerInstance, existing []ServerInstance) Se
 	return instance
 }
 
+func validateServerInstancePorts(candidate ServerInstance, existing []ServerInstance) error {
+	type namedPort struct {
+		name string
+		port int
+	}
+	ports := []namedPort{
+		{name: "游戏端口", port: candidate.PublicPort},
+		{name: "查询端口", port: candidate.QueryPort},
+		{name: "RCON 端口", port: candidate.RCONPort},
+		{name: "REST API 端口", port: candidate.RESTPort},
+	}
+	usedByCandidate := map[int]string{}
+	for _, item := range ports {
+		if err := validatePort(item.name, item.port); err != nil {
+			return err
+		}
+		if previous := usedByCandidate[item.port]; previous != "" {
+			return fmt.Errorf("%s和%s不能使用同一个端口 %d", previous, item.name, item.port)
+		}
+		usedByCandidate[item.port] = item.name
+	}
+	for _, instance := range existing {
+		if instance.ID == candidate.ID {
+			continue
+		}
+		otherPorts := map[int]string{
+			instance.PublicPort: "游戏端口",
+			instance.QueryPort:  "查询端口",
+			instance.RCONPort:   "RCON 端口",
+			instance.RESTPort:   "REST API 端口",
+		}
+		for _, item := range ports {
+			if otherName := otherPorts[item.port]; otherName != "" {
+				return fmt.Errorf("端口 %d 已被服务器“%s”的%s使用，请为“%s”设置其他%s", item.port, instance.Name, otherName, candidate.Name, item.name)
+			}
+		}
+	}
+	return nil
+}
+
 func nextAvailablePort(start int, used map[int]bool) int {
 	if start < 1024 || start > 65535 {
 		start = 1024
@@ -233,11 +273,16 @@ func (a *App) ImportExistingServer(root string) (ServerInstance, error) {
 		instance.AdminPassword = values["AdminPassword"]
 		instance.ServerPassword = values["ServerPassword"]
 		instance.PublicPort = parsePort(values["PublicPort"], instance.PublicPort)
+		instance.QueryPort = parsePort(values["QueryPort"], instance.QueryPort)
 		instance.RCONPort = parsePort(values["RCONPort"], instance.RCONPort)
 		instance.RESTPort = parsePort(values["RESTAPIPort"], instance.RESTPort)
 	}
 	if instance.AdminPassword == "" {
 		instance.AdminPassword = randomPassword()
+	}
+	instance = assignAvailablePorts(instance, a.store.Snapshot().Instances)
+	if err := syncInstanceWorldSettings(instance); err != nil {
+		return ServerInstance{}, fmt.Errorf("sync imported server settings: %w", err)
 	}
 	return a.store.Upsert(instance)
 }
