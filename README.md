@@ -20,6 +20,10 @@ Palworld 专用服务器的一体化 Windows 启动器，使用 Wails 2、React 
 
 ![服务器概览](docs/screenshots/server-overview.png)
 
+### 在线玩家管理
+
+![在线玩家管理](docs/screenshots/player-management.png)
+
 ### 自动化与维护计划
 
 ![自动化与维护计划](docs/screenshots/automation.png)

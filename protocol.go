@@ -9,9 +9,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var playerActionTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_.:@-]{1,128}$`)
 
 func restGet(instance ServerInstance, endpoint string) (map[string]any, error) {
 	return restRequest(instance, http.MethodGet, endpoint, nil)
@@ -216,39 +219,85 @@ func (a *App) PlayerAction(id string, request ActionRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if request.UserID == "" {
-		return "", errors.New("userId is required")
+	if err := validatePlayerActionToken("userId", request.UserID); err != nil {
+		return "", err
 	}
 	switch request.Action {
 	case "kick", "ban":
 		_, err = restPost(instance, "/"+request.Action, map[string]any{"userid": request.UserID, "message": "Managed by Palserver Launcher"})
 		return "OK", err
-	case "setadmin":
-		return sendRCON(instance, "setadmin "+request.UserID)
-	case "ipban":
-		return sendRCON(instance, "ipban "+request.UserID)
-	case "item":
-		return sendRCON(instance, fmt.Sprintf("give %s %s %d", request.UserID, request.Value, max(1, request.Amount)))
-	case "exp":
-		return sendRCON(instance, fmt.Sprintf("give_exp %s %d", request.UserID, max(1, request.Amount)))
-	case "relic":
-		return sendRCON(instance, fmt.Sprintf("give_relic %s CapturePower %d", request.UserID, max(1, request.Amount)))
-	case "tech":
-		return sendRCON(instance, fmt.Sprintf("givetechpoints %s %d", request.UserID, max(1, request.Amount)))
-	case "bosstech":
-		return sendRCON(instance, fmt.Sprintf("givebosstechpoints %s %d", request.UserID, max(1, request.Amount)))
-	case "pal":
-		count := max(1, request.Amount)
-		responses := make([]string, 0, count)
-		for i := 0; i < count; i++ {
-			response, actionErr := sendRCON(instance, fmt.Sprintf("givepal %s %s", request.UserID, request.Value))
-			if actionErr != nil {
-				return "", actionErr
-			}
-			responses = append(responses, response)
+	}
+	commands, err := buildPlayerActionCommands(request)
+	if err != nil {
+		return "", err
+	}
+	responses := make([]string, 0, len(commands))
+	for _, command := range commands {
+		response, actionErr := sendRCON(instance, command)
+		if actionErr != nil {
+			return "", actionErr
 		}
-		return strings.Join(responses, "\n"), nil
+		responses = append(responses, response)
+	}
+	return strings.Join(responses, "\n"), nil
+}
+
+func validatePlayerActionToken(label, value string) error {
+	if !playerActionTokenPattern.MatchString(value) {
+		return fmt.Errorf("%s contains unsupported characters", label)
+	}
+	return nil
+}
+
+func buildPlayerActionCommands(request ActionRequest) ([]string, error) {
+	if err := validatePlayerActionToken("userId", request.UserID); err != nil {
+		return nil, err
+	}
+	requireValue := func(label, value string) error { return validatePlayerActionToken(label, value) }
+	amount := max(1, request.Amount)
+	switch request.Action {
+	case "setadmin":
+		return []string{"setadmin " + request.UserID}, nil
+	case "ipban":
+		return []string{"ipban " + request.UserID}, nil
+	case "item":
+		if err := requireValue("itemId", request.Value); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("give %s %s %d", request.UserID, request.Value, amount)}, nil
+	case "exp":
+		return []string{fmt.Sprintf("give_exp %s %d", request.UserID, amount)}, nil
+	case "relic":
+		return []string{fmt.Sprintf("give_relic %s CapturePower %d", request.UserID, amount)}, nil
+	case "tech":
+		return []string{fmt.Sprintf("givetechpoints %s %d", request.UserID, amount)}, nil
+	case "bosstech":
+		return []string{fmt.Sprintf("givebosstechpoints %s %d", request.UserID, amount)}, nil
+	case "stats":
+		return []string{fmt.Sprintf("givestats %s %d", request.UserID, amount)}, nil
+	case "learntech":
+		if err := requireValue("techId", request.Value); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("learntech %s %s", request.UserID, request.Value)}, nil
+	case "egg":
+		if err := requireValue("eggId", request.Value); err != nil {
+			return nil, err
+		}
+		if err := requireValue("palId", request.Extra); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("giveegg %s %s %s %d", request.UserID, request.Value, request.Extra, amount)}, nil
+	case "pal":
+		if err := requireValue("palId", request.Value); err != nil {
+			return nil, err
+		}
+		commands := make([]string, amount)
+		for index := range commands {
+			commands[index] = fmt.Sprintf("givepal %s %s", request.UserID, request.Value)
+		}
+		return commands, nil
 	default:
-		return "", errors.New("unsupported player action")
+		return nil, errors.New("unsupported player action")
 	}
 }

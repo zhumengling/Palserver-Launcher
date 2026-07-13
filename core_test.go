@@ -78,6 +78,73 @@ func TestRCONSuccessfulCommandWithoutResponseDoesNotSurfaceTimeout(t *testing.T)
 	}
 }
 
+func TestBuildPlayerActionCommandsSupportsOnePointZeroRewards(t *testing.T) {
+	tests := []struct {
+		name    string
+		request ActionRequest
+		want    []string
+	}{
+		{
+			name:    "unallocated stat points",
+			request: ActionRequest{Action: "stats", UserID: "steam_76561190000000000", Amount: 4},
+			want:    []string{"givestats steam_76561190000000000 4"},
+		},
+		{
+			name:    "unlock all technology",
+			request: ActionRequest{Action: "learntech", UserID: "steam_76561190000000000", Value: "all"},
+			want:    []string{"learntech steam_76561190000000000 all"},
+		},
+		{
+			name:    "pal egg with selected pal and level",
+			request: ActionRequest{Action: "egg", UserID: "steam_76561190000000000", Value: "PalEgg_Dragon_05", Extra: "GoldenHorse", Amount: 50},
+			want:    []string{"giveegg steam_76561190000000000 PalEgg_Dragon_05 GoldenHorse 50"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := buildPlayerActionCommands(test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(got, "\n") != strings.Join(test.want, "\n") {
+				t.Fatalf("commands = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildPlayerActionCommandsRejectsCommandInjection(t *testing.T) {
+	tests := []ActionRequest{
+		{Action: "item", UserID: "steam_1\nShutdown 0", Value: "Wood", Amount: 1},
+		{Action: "item", UserID: "steam_1", Value: "Wood;Shutdown 0", Amount: 1},
+		{Action: "learntech", UserID: "steam_1", Value: "all Shutdown 0"},
+		{Action: "egg", UserID: "steam_1", Value: "PalEgg_Normal_01", Extra: "SheepBall\r\nShutdown 0", Amount: 1},
+	}
+	for _, request := range tests {
+		if commands, err := buildPlayerActionCommands(request); err == nil {
+			t.Fatalf("unsafe request was accepted with commands %#v: %#v", commands, request)
+		}
+	}
+}
+
+func TestFrontendPlayerRewardsAndWorldMapAreExposed(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	for _, expected := range []string{
+		`<option value="stats">属性点</option>`,
+		`<option value="egg">帕鲁蛋</option>`,
+		`<option value="learntech">解锁科技</option>`,
+		`/map/palworld-world-map.webp`,
+	} {
+		if !strings.Contains(source, expected) {
+			t.Fatalf("frontend is missing %q", expected)
+		}
+	}
+}
+
 func TestRCONProbeStopsAfterAuthentication(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

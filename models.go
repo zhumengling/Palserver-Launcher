@@ -268,4 +268,5 @@ type ActionRequest struct {
 	UserID string `json:"userId"`
 	Value  string `json:"value"`
 	Amount int    `json:"amount"`
+	Extra  string `json:"extra"`
 }
