@@ -215,6 +215,15 @@ func TestServerProcessPatternDoesNotMatchSiblingDirectoryPrefixes(t *testing.T) 
 	}
 }
 
+func TestPalServerWrapperIsTrackedThroughItsChildProcess(t *testing.T) {
+	if !usesPalServerWrapper(`D:\PalworldServers\Server1\PalServer.exe`) {
+		t.Fatal("PalServer.exe launcher fallback was not recognized as a child-process launcher")
+	}
+	if usesPalServerWrapper(`D:\PalworldServers\Server1\Pal\Binaries\Win64\PalServer-Win64-Shipping.exe`) {
+		t.Fatal("Shipping binary was incorrectly treated as the launcher wrapper")
+	}
+}
+
 func TestFrontendStatusPollingDoesNotOverlapSlowStatusRequests(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
 	if err != nil {

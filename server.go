@@ -35,6 +35,30 @@ func serverLaunchExecutable(instance ServerInstance) string {
 	return instance.Executable
 }
 
+func usesPalServerWrapper(path string) bool {
+	return strings.EqualFold(filepath.Base(filepath.Clean(path)), "PalServer.exe")
+}
+
+func serverChildProcessRunning(instance ServerInstance) bool {
+	rootPattern := strings.ReplaceAll(serverProcessRootPattern(instance.Executable), "'", "''")
+	query := `$rootPattern='` + rootPattern + `'; [bool](Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('PalServer-Win64-Shipping-Cmd.exe','PalServer-Win64-Shipping.exe') -and $_.ExecutablePath -like $rootPattern } | Select-Object -First 1) | ConvertTo-Json -Compress`
+	output, err := newHiddenPowerShell(query).Output()
+	return err == nil && strings.EqualFold(strings.TrimSpace(string(output)), "true")
+}
+
+func waitForServerChild(instance ServerInstance, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if serverChildProcessRunning(instance) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+}
+
 func newHiddenPowerShell(query string) *exec.Cmd {
 	command := exec.Command("powershell", "-NoProfile", "-Command", query)
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
@@ -185,22 +209,36 @@ func (a *App) StartServer(id string) error {
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	select {
-	case waitErr := <-exited:
-		_ = logFile.Close()
-		return serverStartupFailure(waitErr, readLogTail(logFile.Name()))
-	case <-time.After(3 * time.Second):
+	if usesPalServerWrapper(launchPath) {
+		// PalServer.exe only launches the actual Shipping child process and exits.
+		// Waiting on this wrapper would report a false startup failure, so verify
+		// the child through the instance process detector instead.
+		if !waitForServerChild(instance, 10*time.Second) {
+			go func() { _ = <-exited; _ = logFile.Close() }()
+			return serverStartupFailure(nil, readLogTail(logFile.Name()))
+		}
+	} else {
+		select {
+		case waitErr := <-exited:
+			_ = logFile.Close()
+			return serverStartupFailure(waitErr, readLogTail(logFile.Name()))
+		case <-time.After(3 * time.Second):
+		}
 	}
 	a.onServerStarted(id, time.Now())
 	a.scheduleAutoRestart(instance)
 	runtime.EventsEmit(a.ctx, "server:started", id, cmd.Process.Pid)
 	a.notifyDiscord(id, "start", "服务器已启动", instance.Name)
-	go func() {
-		err := <-exited
-		_ = logFile.Close()
-		runtime.EventsEmit(a.ctx, "server:exited", id, fmt.Sprint(err))
-		a.handleServerExit(instance, err)
-	}()
+	if usesPalServerWrapper(launchPath) {
+		go func() { _ = <-exited; _ = logFile.Close() }()
+	} else {
+		go func() {
+			err := <-exited
+			_ = logFile.Close()
+			runtime.EventsEmit(a.ctx, "server:exited", id, fmt.Sprint(err))
+			a.handleServerExit(instance, err)
+		}()
+	}
 	return nil
 }
 
