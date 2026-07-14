@@ -144,6 +144,24 @@ func (a *App) ListBackups(id string) ([]BackupEntry, error) {
 	return result, nil
 }
 
+func claimBackupDestination(root string, now time.Time) (string, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	name := now.Format("20060102-150405.000")
+	for suffix := 1; ; suffix++ {
+		candidate := filepath.Join(root, name)
+		if suffix > 1 {
+			candidate = filepath.Join(root, fmt.Sprintf("%s-%d", name, suffix))
+		}
+		if err := os.Mkdir(candidate, 0o755); err == nil {
+			return candidate, nil
+		} else if !os.IsExist(err) {
+			return "", err
+		}
+	}
+}
+
 func (a *App) CreateBackup(id string) (BackupEntry, error) {
 	instance, err := a.store.Find(id)
 	if err != nil {
@@ -156,15 +174,22 @@ func (a *App) CreateBackup(id string) (BackupEntry, error) {
 	if _, err := os.Stat(source); err != nil {
 		return BackupEntry{}, missingSaveDirectoryError()
 	}
-	base, _ := appDataDir()
-	name := time.Now().Format("20060102-150405")
-	destination := filepath.Join(base, "backups", id, name)
-	if err := copyTree(source, destination); err != nil {
+	base, err := appDataDir()
+	if err != nil {
 		return BackupEntry{}, err
 	}
-	entry := BackupEntry{Name: name, Path: destination, CreatedAt: time.Now().UnixMilli(), Size: dirSize(destination)}
+	now := time.Now()
+	destination, err := claimBackupDestination(filepath.Join(base, "backups", id), now)
+	if err != nil {
+		return BackupEntry{}, err
+	}
+	if err := copyTree(source, destination); err != nil {
+		_ = os.RemoveAll(destination)
+		return BackupEntry{}, err
+	}
+	entry := BackupEntry{Name: filepath.Base(destination), Path: destination, CreatedAt: now.UnixMilli(), Size: dirSize(destination)}
 	_ = a.PruneBackups(id)
-	a.notifyDiscord(id, "backup", "备份已完成", name)
+	a.notifyDiscord(id, "backup", "备份已完成", entry.Name)
 	return entry, nil
 }
 

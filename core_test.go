@@ -700,6 +700,51 @@ func TestMissingSaveDirectoryHasStableSentinel(t *testing.T) {
 	}
 }
 
+func TestClaimBackupDestinationCreatesDistinctDirectories(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "backups", "server-a")
+	now := time.Date(2026, 7, 14, 10, 30, 45, 123000000, time.Local)
+	first, err := claimBackupDestination(root, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := claimBackupDestination(root, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || filepath.Base(second) != filepath.Base(first)+"-2" {
+		t.Fatalf("claimed backup destinations = %q, %q", first, second)
+	}
+}
+
+func TestClaimBackupDestinationIsSafeForConcurrentBackups(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "backups", "server-a")
+	now := time.Date(2026, 7, 14, 10, 30, 45, 123000000, time.Local)
+	paths := make(chan string, 8)
+	errs := make(chan error, 8)
+	for range 8 {
+		go func() {
+			path, err := claimBackupDestination(root, now)
+			if err != nil {
+				errs <- err
+				return
+			}
+			paths <- path
+		}()
+	}
+	seen := map[string]bool{}
+	for range 8 {
+		select {
+		case err := <-errs:
+			t.Fatal(err)
+		case path := <-paths:
+			if seen[path] {
+				t.Fatalf("backup destination was claimed twice: %q", path)
+			}
+			seen[path] = true
+		}
+	}
+}
+
 func TestGuardianUsesFailureThresholdAndRestartBudget(t *testing.T) {
 	if guardianFailureReached(2, 3) {
 		t.Fatal("guardian restarted before reaching failure threshold")
