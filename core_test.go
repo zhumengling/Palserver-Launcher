@@ -764,6 +764,19 @@ func TestDirEntryInfoRejectsEntriesThatDisappearDuringScan(t *testing.T) {
 	}
 }
 
+func TestReleaseDownloadTemporaryArchiveUsesDestinationVolume(t *testing.T) {
+	destination := t.TempDir()
+	archive, err := createReleaseTempArchive(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(archive.Name())
+	defer archive.Close()
+	if filepath.Dir(archive.Name()) != destination {
+		t.Fatalf("temporary archive directory = %q, want %q", filepath.Dir(archive.Name()), destination)
+	}
+}
+
 func TestGuardianUsesFailureThresholdAndRestartBudget(t *testing.T) {
 	if guardianFailureReached(2, 3) {
 		t.Fatal("guardian restarted before reaching failure threshold")

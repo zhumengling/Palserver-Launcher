@@ -303,6 +303,13 @@ type githubRelease struct {
 	} `json:"assets"`
 }
 
+func createReleaseTempArchive(destination string) (*os.File, error) {
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		return nil, err
+	}
+	return os.CreateTemp(destination, "palserver-extension-*.zip")
+}
+
 func downloadLatestRelease(repo, destination string, matcher func(string) bool) (string, error) {
 	req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/latest", nil)
 	req.Header.Set("User-Agent", "palserver-launcher")
@@ -330,7 +337,7 @@ func downloadLatestRelease(repo, destination string, matcher func(string) bool) 
 		if assetResp.StatusCode != http.StatusOK {
 			return "", fmt.Errorf("download failed: %s", assetResp.Status)
 		}
-		temp, err := os.CreateTemp("", "palserver-extension-*.zip")
+		temp, err := createReleaseTempArchive(destination)
 		if err != nil {
 			return "", err
 		}
