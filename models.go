@@ -44,6 +44,24 @@ type ServerUpdateStatus struct {
 	Branch          string `json:"branch"`
 }
 
+type LauncherUpdateInfo struct {
+	CurrentVersion  string `json:"currentVersion"`
+	LatestVersion   string `json:"latestVersion"`
+	Title           string `json:"title"`
+	Notes           string `json:"notes"`
+	PublishedAt     string `json:"publishedAt"`
+	AssetName       string `json:"assetName"`
+	AssetSize       int64  `json:"assetSize"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+}
+
+type LauncherUpdateProgress struct {
+	Message    string `json:"message"`
+	Percent    int    `json:"percent"`
+	Downloaded int64  `json:"downloaded"`
+	Total      int64  `json:"total"`
+}
+
 type AppConfig struct {
 	Instances        []ServerInstance       `json:"instances"`
 	MaintenanceTasks []MaintenanceTask      `json:"maintenanceTasks"`

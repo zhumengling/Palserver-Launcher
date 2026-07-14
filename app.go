@@ -30,6 +30,8 @@ type App struct {
 	guardianSuppressed map[string]bool
 	serverModUpdateMu  sync.RWMutex
 	serverModUpdates   map[string]nexusModInfo
+	launcherUpdateMu   sync.Mutex
+	launcherUpdating   bool
 	frpProcesses       map[string]*exec.Cmd
 	frpClaims          map[string]frpRuntimeClaim
 }

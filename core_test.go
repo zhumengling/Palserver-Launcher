@@ -1038,12 +1038,7 @@ func TestFRPRuntimeRejectsDuplicateProxyNamesOnTheSameFRPS(t *testing.T) {
 }
 
 func TestFRPReleaseSelectionUsesWindowsAMD64Archive(t *testing.T) {
-	release := githubRelease{TagName: "v0.70.0", Assets: []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-		Digest             string `json:"digest"`
-		Size               int64  `json:"size"`
-	}{
+	release := githubRelease{TagName: "v0.70.0", Assets: []githubReleaseAsset{
 		{Name: "frp_0.70.0_linux_amd64.tar.gz", BrowserDownloadURL: "https://example.test/linux"},
 		{Name: "frp_0.70.0_windows_amd64.zip", BrowserDownloadURL: "https://example.test/windows", Digest: "sha256:abc"},
 	}}
@@ -1119,12 +1114,7 @@ func TestPlayerPresenceTransitions(t *testing.T) {
 }
 
 func TestSaveInspectorAssetSelectionAndChecksum(t *testing.T) {
-	release := githubRelease{TagName: "v1", Assets: []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-		Digest             string `json:"digest"`
-		Size               int64  `json:"size"`
-	}{{Name: "pst_v1_windows_x86_64.zip", BrowserDownloadURL: "https://example.test/pst.zip", Digest: "sha256:abc"}}}
+	release := githubRelease{TagName: "v1", Assets: []githubReleaseAsset{{Name: "pst_v1_windows_x86_64.zip", BrowserDownloadURL: "https://example.test/pst.zip", Digest: "sha256:abc"}}}
 	asset, err := selectSaveInspectorAsset(release)
 	if err != nil || asset.Name != "pst_v1_windows_x86_64.zip" {
 		t.Fatalf("save inspector asset = %#v, %v", asset, err)

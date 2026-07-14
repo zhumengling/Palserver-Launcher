@@ -47,6 +47,12 @@ function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupProgress, setSetupProgress] = useState({ message: '准备开始', percent: 0 });
+  const [launcherVersion, setLauncherVersion] = useState('v0.1.1');
+  const [launcherUpdate, setLauncherUpdate] = useState<main.LauncherUpdateInfo | null>(null);
+  const [launcherUpdateOpen, setLauncherUpdateOpen] = useState(false);
+  const [launcherUpdateBusy, setLauncherUpdateBusy] = useState(false);
+  const [launcherUpdateProgress, setLauncherUpdateProgress] = useState({ message: '准备下载', percent: 0, downloaded: 0, total: 0 });
+  const [launcherUpdateError, setLauncherUpdateError] = useState('');
   const statusRefreshSequence = useRef(0);
   const instancesRef = useRef<main.ServerInstance[]>([]);
 
@@ -72,6 +78,18 @@ function App() {
   }, []);
 
   useEffect(() => { reloadConfig(); }, [reloadConfig]);
+  useEffect(() => {
+    API.GetLauncherVersion().then(setLauncherVersion).catch(() => undefined);
+    // Check once on startup; network failures stay silent, while a real update is surfaced.
+    API.CheckLauncherUpdate().then((info) => {
+      setLauncherUpdate(info);
+      if (info.updateAvailable) setLauncherUpdateOpen(true);
+    }).catch(() => undefined);
+    const off = EventsOn('launcher:update-progress', (payload: { message: string; percent: number; downloaded: number; total: number }) => {
+      setLauncherUpdateProgress(payload);
+    });
+    return off;
+  }, []);
   useEffect(() => {
     instancesRef.current = config.instances || [];
     void refreshStatuses(config.instances || []);
@@ -140,6 +158,30 @@ function App() {
     }
   }
 
+  async function checkLauncherUpdate() {
+    setLauncherUpdateError('');
+    try {
+      const info = await API.CheckLauncherUpdate();
+      setLauncherUpdate(info);
+      setLauncherUpdateOpen(true);
+    } catch (error) {
+      setLauncherUpdateError(String(error));
+      setLauncherUpdateOpen(true);
+    }
+  }
+
+  async function applyLauncherUpdate() {
+    setLauncherUpdateBusy(true);
+    setLauncherUpdateError('');
+    setLauncherUpdateProgress({ message: '准备下载', percent: 0, downloaded: 0, total: launcherUpdate?.assetSize || 0 });
+    try {
+      await API.ApplyLauncherUpdate();
+    } catch (error) {
+      setLauncherUpdateError(String(error));
+      setLauncherUpdateBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -152,7 +194,7 @@ function App() {
           {!config.instances?.length && <button className="empty-server" onClick={() => setSetupOpen(true)}><Plus size={18}/>一键安装服务器</button>}
         </div>
         <nav>{nav.map(([id, label, Icon]) => <button key={id} className={view === id ? 'active' : ''} disabled={!selected} onClick={() => setView(id)}><Icon size={17}/><span>{label}</span></button>)}</nav>
-        <div className="sidebar-footer"><span>Wails + Go</span><span className="version">v0.1</span></div>
+        <div className="sidebar-footer"><span>Wails + Go</span><button className="version" title="检查启动器更新" onClick={checkLauncherUpdate}>{launcherVersion}{launcherUpdate?.updateAvailable && <i/>}</button></div>
       </aside>
 
       <main>
@@ -190,9 +232,22 @@ function App() {
       </main>
       {editor && <InstanceDialog value={editor} onClose={() => setEditor(null)} onSaved={async () => { setEditor(null); const next = await reloadConfig(); await refreshStatuses(next.instances || []); }}/>}
       {setupOpen && <QuickSetupDialog installing={setupBusy} progress={setupProgress} onClose={() => !setupBusy && setSetupOpen(false)} onInstall={quickSetup}/>}
+      {launcherUpdateOpen && <LauncherUpdateDialog info={launcherUpdate} busy={launcherUpdateBusy} progress={launcherUpdateProgress} error={launcherUpdateError} onClose={() => !launcherUpdateBusy && setLauncherUpdateOpen(false)} onCheck={checkLauncherUpdate} onApply={applyLauncherUpdate}/>}
       {busy && <div className="busy-layer"><RefreshCw className="spin" size={22}/><span>正在执行...</span></div>}
     </div>
   );
+}
+
+function LauncherUpdateDialog({ info, busy, progress, error, onClose, onCheck, onApply }: { info: main.LauncherUpdateInfo | null; busy: boolean; progress: { message: string; percent: number; downloaded: number; total: number }; error: string; onClose: () => void; onCheck: () => void; onApply: () => void }) {
+  return <div className="modal-backdrop"><section className="modal launcher-update-modal">
+    <div className="modal-header"><div><h2>启动器更新</h2><p>检查 GitHub Releases 中的稳定版本</p></div><button onClick={onClose} disabled={busy}><X size={16}/></button></div>
+    {error ? <div className="launcher-update-error"><CircleOff size={17}/><span>{error}</span></div> : info ? <div className="launcher-update-body">
+      <div className="launcher-update-summary"><Download size={23}/><div><strong>{info.updateAvailable ? `${info.title || '发现新版本'} · ${info.latestVersion}` : '已是最新版本'}</strong><span>{info.updateAvailable ? `当前 ${info.currentVersion} · ${info.assetName} · ${formatBytes(info.assetSize)}` : `当前版本 ${info.currentVersion}`}</span>{info.updateAvailable && info.publishedAt && <span>发布时间：{new Date(info.publishedAt).toLocaleString()}</span>}</div></div>
+      {info.notes && <pre className="launcher-update-notes">{info.notes}</pre>}
+      {busy && <div className="launcher-update-progress"><div className="progress-track"><span style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }}/></div><p>{progress.message} · {progress.percent}%{progress.total > 0 ? ` · ${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}` : ''}</p></div>}
+    </div> : <div className="launcher-update-empty">正在检查更新…</div>}
+    <div className="modal-actions"><button className="ghost" onClick={onCheck} disabled={busy}><RefreshCw size={14}/>重新检查</button>{info?.updateAvailable && <button className="primary" onClick={onApply} disabled={busy}>{busy ? '正在更新…' : '下载并重启'}<Download size={14}/></button>}</div>
+  </section></div>;
 }
 
 function Welcome({ onCreate, onImport }: { onCreate: () => void; onImport: () => void }) {

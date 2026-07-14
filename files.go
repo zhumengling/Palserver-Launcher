@@ -344,14 +344,21 @@ func (a *App) ToggleExtension(id, extensionID string, enabled bool) error {
 	return os.Rename(from, to)
 }
 
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Digest             string `json:"digest"`
+	Size               int64  `json:"size"`
+}
+
 type githubRelease struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-		Digest             string `json:"digest"`
-		Size               int64  `json:"size"`
-	} `json:"assets"`
+	TagName     string               `json:"tag_name"`
+	Name        string               `json:"name"`
+	Body        string               `json:"body"`
+	PublishedAt string               `json:"published_at"`
+	Draft       bool                 `json:"draft"`
+	Prerelease  bool                 `json:"prerelease"`
+	Assets      []githubReleaseAsset `json:"assets"`
 }
 
 func createReleaseTempArchive(destination string) (*os.File, error) {
