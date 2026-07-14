@@ -745,6 +745,53 @@ func TestClaimBackupDestinationIsSafeForConcurrentBackups(t *testing.T) {
 	}
 }
 
+func TestRestoreBackupPreservesExistingSaveWhenStagingCopyFails(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "SaveGames")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(destination, "original.sav")
+	if err := os.WriteFile(original, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreBackupTree(filepath.Join(root, "missing-backup"), destination); err == nil {
+		t.Fatal("restore accepted a missing backup")
+	}
+	data, err := os.ReadFile(original)
+	if err != nil || string(data) != "keep" {
+		t.Fatalf("existing save was changed after failed restore: %q, %v", data, err)
+	}
+}
+
+func TestRestoreBackupReplacesSaveOnlyAfterStagingCompletes(t *testing.T) {
+	root := t.TempDir()
+	backup := filepath.Join(root, "backup")
+	destination := filepath.Join(root, "SaveGames")
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "new.sav"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "old.sav"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreBackupTree(backup, destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "old.sav")); !os.IsNotExist(err) {
+		t.Fatalf("old save remained after restore: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(destination, "new.sav"))
+	if err != nil || string(data) != "new" {
+		t.Fatalf("restored save = %q, %v", data, err)
+	}
+}
+
 type failingBackupDirEntry struct{}
 
 func (failingBackupDirEntry) Name() string               { return "partial-backup" }

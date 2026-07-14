@@ -224,11 +224,62 @@ func (a *App) RestoreBackup(id, backupPath string) error {
 	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return errors.New("invalid backup path")
 	}
-	destination, _ := safeJoin(instance.RootPath, "Pal", "Saved", "SaveGames")
-	if err := os.RemoveAll(destination); err != nil {
+	destination, err := safeJoin(instance.RootPath, "Pal", "Saved", "SaveGames")
+	if err != nil {
 		return err
 	}
-	return copyTree(backupAbs, destination)
+	return restoreBackupTree(backupAbs, destination)
+}
+
+func nextRestoreSwapPath(destination string) (string, error) {
+	base := filepath.Base(destination)
+	parent := filepath.Dir(destination)
+	for suffix := 1; ; suffix++ {
+		candidate := filepath.Join(parent, fmt.Sprintf(".%s.restore-old-%d", base, suffix))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+}
+
+func restoreBackupTree(source, destination string) error {
+	parent := filepath.Dir(destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(parent, ".restore-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	if err := copyTree(source, staging); err != nil {
+		return err
+	}
+
+	previous := ""
+	if _, err := os.Stat(destination); err == nil {
+		previous, err = nextRestoreSwapPath(destination)
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(destination, previous); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(staging, destination); err != nil {
+		if previous != "" {
+			_ = os.Rename(previous, destination)
+		}
+		return err
+	}
+	if previous != "" {
+		_ = os.RemoveAll(previous)
+	}
+	return nil
 }
 
 func win64Path(instance ServerInstance) string {
