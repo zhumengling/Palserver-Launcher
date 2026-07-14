@@ -310,6 +310,8 @@ func createReleaseTempArchive(destination string) (*os.File, error) {
 	return os.CreateTemp(destination, "palserver-extension-*.zip")
 }
 
+func releaseDownloadClient() *http.Client { return &http.Client{Timeout: 10 * time.Minute} }
+
 func downloadLatestRelease(repo, destination string, matcher func(string) bool) (string, error) {
 	req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/latest", nil)
 	req.Header.Set("User-Agent", "palserver-launcher")
@@ -329,7 +331,7 @@ func downloadLatestRelease(repo, destination string, matcher func(string) bool) 
 		if !matcher(strings.ToLower(asset.Name)) {
 			continue
 		}
-		assetResp, err := http.Get(asset.BrowserDownloadURL)
+		assetResp, err := releaseDownloadClient().Get(asset.BrowserDownloadURL)
 		if err != nil {
 			return "", err
 		}

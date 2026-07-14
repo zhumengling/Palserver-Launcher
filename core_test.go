@@ -777,6 +777,12 @@ func TestReleaseDownloadTemporaryArchiveUsesDestinationVolume(t *testing.T) {
 	}
 }
 
+func TestReleaseDownloadClientHasFiniteTimeout(t *testing.T) {
+	if client := releaseDownloadClient(); client.Timeout < time.Minute {
+		t.Fatalf("release download timeout = %s, want at least one minute", client.Timeout)
+	}
+}
+
 func TestGuardianUsesFailureThresholdAndRestartBudget(t *testing.T) {
 	if guardianFailureReached(2, 3) {
 		t.Fatal("guardian restarted before reaching failure threshold")
