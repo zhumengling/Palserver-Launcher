@@ -301,6 +301,33 @@ func ue4ssModsRoot(instance ServerInstance) string {
 	return current
 }
 
+func palDefenderInstallationState(base string) (installed, enabled bool) {
+	_, loaderErr := os.Stat(filepath.Join(base, "d3d9.dll"))
+	_, enabledErr := os.Stat(filepath.Join(base, "PalDefender.dll"))
+	_, disabledErr := os.Stat(filepath.Join(base, "PalDefender.disabled.dll"))
+	loaderInstalled := loaderErr == nil
+	enabledInstalled := enabledErr == nil
+	disabledInstalled := disabledErr == nil
+	return loaderInstalled && (enabledInstalled || disabledInstalled), loaderInstalled && enabledInstalled
+}
+
+func validateExtensionInstallation(base, extensionID string) error {
+	switch extensionID {
+	case "paldefender":
+		installed, _ := palDefenderInstallationState(base)
+		if !installed {
+			return errors.New("PalDefender 安装不完整：缺少 PalDefender.dll 或 d3d9.dll")
+		}
+	case "ue4ss":
+		if _, err := os.Stat(filepath.Join(base, "UE4SS.dll")); err != nil {
+			return errors.New("UE4SS 安装不完整：缺少 UE4SS.dll")
+		}
+	default:
+		return errors.New("unknown extension")
+	}
+	return nil
+}
+
 func (a *App) ListExtensions(id string) ([]ExtensionStatus, error) {
 	instance, err := a.store.Find(id)
 	if err != nil {
@@ -314,10 +341,16 @@ func (a *App) ListExtensions(id string) ([]ExtensionStatus, error) {
 	result := make([]ExtensionStatus, 0, len(extensions))
 	for _, extension := range extensions {
 		enabledPath, disabledPath := filepath.Join(base, extension.file), filepath.Join(base, extension.disabled)
-		_, enabledErr := os.Stat(enabledPath)
-		_, disabledErr := os.Stat(disabledPath)
+		installed, enabled := false, false
+		if extension.id == "paldefender" {
+			installed, enabled = palDefenderInstallationState(base)
+		} else {
+			_, enabledErr := os.Stat(enabledPath)
+			_, disabledErr := os.Stat(disabledPath)
+			installed, enabled = enabledErr == nil || disabledErr == nil, enabledErr == nil
+		}
 		versionData, _ := os.ReadFile(filepath.Join(base, extension.version))
-		result = append(result, ExtensionStatus{ID: extension.id, Name: extension.name, Installed: enabledErr == nil || disabledErr == nil, Enabled: enabledErr == nil, Version: strings.TrimSpace(string(versionData)), Path: enabledPath})
+		result = append(result, ExtensionStatus{ID: extension.id, Name: extension.name, Installed: installed, Enabled: enabled, Version: strings.TrimSpace(string(versionData)), Path: enabledPath})
 	}
 	return result, nil
 }
@@ -469,9 +502,20 @@ func (a *App) UpdateExtension(id, extensionID string) (string, error) {
 	var version string
 	switch extensionID {
 	case "paldefender":
+		_, enabledErr := os.Stat(filepath.Join(base, "PalDefender.dll"))
+		_, disabledErr := os.Stat(filepath.Join(base, "PalDefender.disabled.dll"))
+		preserveDisabled := enabledErr != nil && disabledErr == nil
 		version, err = downloadLatestRelease("Ultimeit/PalDefender", base, func(name string) bool {
 			return strings.HasSuffix(name, ".zip") && strings.Contains(name, "paldefender")
 		})
+		if err == nil {
+			if preserveDisabled {
+				_ = os.Remove(filepath.Join(base, "PalDefender.disabled.dll"))
+				err = os.Rename(filepath.Join(base, "PalDefender.dll"), filepath.Join(base, "PalDefender.disabled.dll"))
+			} else {
+				_ = os.Remove(filepath.Join(base, "PalDefender.disabled.dll"))
+			}
+		}
 	case "ue4ss":
 		preserved := map[string][]byte{}
 		for _, relative := range []string{"UE4SS-settings.ini", filepath.Join("Mods", "mods.txt"), filepath.Join("ue4ss", "Mods", "mods.txt")} {
@@ -490,6 +534,14 @@ func (a *App) UpdateExtension(id, extensionID string) (string, error) {
 	}
 	if err != nil {
 		return "", err
+	}
+	if err := validateExtensionInstallation(base, extensionID); err != nil {
+		return "", err
+	}
+	if extensionID == "paldefender" {
+		if err := os.MkdirAll(filepath.Join(base, "PalDefender"), 0o755); err != nil {
+			return "", err
+		}
 	}
 	versionFile := map[string]string{"paldefender": "palguard.version.txt", "ue4ss": "ue4ss.version.txt"}[extensionID]
 	if err := os.WriteFile(filepath.Join(base, versionFile), []byte(version+"\n"), 0o600); err != nil {

@@ -107,6 +107,18 @@ func (a *App) UnbanPlayer(id, userID string) error {
 	return err
 }
 
+func palDefenderConfigTarget(base string) string {
+	root := filepath.Join(base, "PalDefender")
+	config := filepath.Join(root, "Config.json")
+	if info, err := os.Stat(config); err == nil && !info.IsDir() {
+		return config
+	}
+	if info, err := os.Stat(root); err == nil && info.IsDir() {
+		return root
+	}
+	return base
+}
+
 func (a *App) GetServerPaths(id string) (map[string]string, error) {
 	instance, err := a.store.Find(id)
 	if err != nil {
@@ -119,7 +131,7 @@ func (a *App) GetServerPaths(id string) (map[string]string, error) {
 		"world":       saveRoot,
 		"config":      filepath.Join(instance.RootPath, "Pal", "Saved", "Config", "WindowsServer"),
 		"logs":        filepath.Join(win64Path(instance), "PalDefender", "Logs"),
-		"paldefender": filepath.Join(win64Path(instance), "PalDefender", "Config.json"),
+		"paldefender": palDefenderConfigTarget(win64Path(instance)),
 	}, nil
 }
 

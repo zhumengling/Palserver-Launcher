@@ -19,7 +19,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-const LauncherVersion = "0.1.1"
+const LauncherVersion = "0.1.2"
 
 const launcherReleaseEndpoint = "https://api.github.com/repos/zhumengling/Palserver-Launcher/releases/latest"
 
@@ -91,7 +91,7 @@ func selectLauncherReleaseAsset(release githubRelease) (launcherReleaseAsset, er
 	}
 	for _, asset := range release.Assets {
 		name := strings.ToLower(asset.Name)
-		if strings.HasPrefix(name, "palserver-launcher-") && strings.HasSuffix(name, "-windows-amd64.exe") {
+		if name == "palserver-launcher.exe" || (strings.HasPrefix(name, "palserver-launcher-") && strings.HasSuffix(name, "-windows-amd64.exe")) {
 			return launcherReleaseAsset{Name: asset.Name, URL: asset.BrowserDownloadURL, Digest: asset.Digest, Size: asset.Size}, nil
 		}
 	}

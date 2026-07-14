@@ -128,19 +128,33 @@ func TestBuildPlayerActionCommandsRejectsCommandInjection(t *testing.T) {
 }
 
 func TestFrontendPlayerRewardsAndWorldMapAreExposed(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
+	appData, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(data)
 	for _, expected := range []string{
 		`<option value="stats">属性点</option>`,
 		`<option value="egg">帕鲁蛋</option>`,
 		`<option value="learntech">解锁科技</option>`,
-		`/map/palworld-world-map.webp`,
 	} {
-		if !strings.Contains(source, expected) {
+		if !strings.Contains(string(appData), expected) {
 			t.Fatalf("frontend is missing %q", expected)
+		}
+	}
+
+	mapData, err := os.ReadFile(filepath.Join("frontend", "src", "mapConfig.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`DEFAULT_MAP_MODE: MapMode = 'v1'`,
+		`/map/palworld-world-map.webp`,
+		`/map/palworld-world-tree-map.png`,
+		`label: '旧地图'`,
+		`label: '1.0 世界树'`,
+	} {
+		if !strings.Contains(string(mapData), expected) {
+			t.Fatalf("map configuration is missing %q", expected)
 		}
 	}
 }
@@ -827,6 +841,68 @@ func TestReleaseDownloadTemporaryArchiveUsesDestinationVolume(t *testing.T) {
 func TestReleaseDownloadClientHasFiniteTimeout(t *testing.T) {
 	if client := releaseDownloadClient(); client.Timeout < time.Minute {
 		t.Fatalf("release download timeout = %s, want at least one minute", client.Timeout)
+	}
+}
+
+func TestPalDefenderInstallationRequiresBinaryAndLoader(t *testing.T) {
+	base := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "PalDefender.dll"), []byte("plugin"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installed, enabled := palDefenderInstallationState(base)
+	if installed || enabled {
+		t.Fatalf("partial PalDefender files reported installed=%v enabled=%v", installed, enabled)
+	}
+	if err := os.WriteFile(filepath.Join(base, "d3d9.dll"), []byte("loader"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installed, enabled = palDefenderInstallationState(base)
+	if !installed || !enabled {
+		t.Fatalf("complete PalDefender files reported installed=%v enabled=%v", installed, enabled)
+	}
+	if err := os.Rename(filepath.Join(base, "PalDefender.dll"), filepath.Join(base, "PalDefender.disabled.dll")); err != nil {
+		t.Fatal(err)
+	}
+	installed, enabled = palDefenderInstallationState(base)
+	if !installed || enabled {
+		t.Fatalf("disabled PalDefender files reported installed=%v enabled=%v", installed, enabled)
+	}
+}
+
+func TestPalDefenderConfigTargetFallsBackUntilFirstServerStart(t *testing.T) {
+	base := t.TempDir()
+	if target := palDefenderConfigTarget(base); target != base {
+		t.Fatalf("config target before installation = %q, want %q", target, base)
+	}
+	root := filepath.Join(base, "PalDefender")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if target := palDefenderConfigTarget(base); target != root {
+		t.Fatalf("config target before generation = %q, want %q", target, root)
+	}
+	config := filepath.Join(root, "Config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if target := palDefenderConfigTarget(base); target != config {
+		t.Fatalf("config target after generation = %q, want %q", target, config)
+	}
+}
+
+func TestPalDefenderConfigButtonsUseSharedActionErrorHandler(t *testing.T) {
+	appData, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolsData, err := os.ReadFile(filepath.Join("frontend", "src", "ToolsView.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, source := range map[string]string{"App.tsx": string(appData), "ToolsView.tsx": string(toolsData)} {
+		if !strings.Contains(source, `run('open-paldefender-config', () => API.OpenServerPath`) {
+			t.Fatalf("%s PalDefender config button bypasses the shared action error handler", name)
+		}
 	}
 }
 
