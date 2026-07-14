@@ -294,6 +294,56 @@ func TestInstallDirectoryRejectsNonASCIIPaths(t *testing.T) {
 	}
 }
 
+func TestDirectXRuntimeCheckIdentifiesMissingLegacyDependencies(t *testing.T) {
+	present := map[string]bool{
+		"d3dcompiler_43.dll": true,
+		"d3dx9_43.dll":       true,
+		"xinput1_3.dll":      true,
+	}
+	missing := missingDirectXRuntimeFiles(`C:\Windows\System32`, func(path string) bool {
+		return present[strings.ToLower(filepath.Base(path))]
+	})
+	if strings.Join(missing, ",") != "xaudio2_7.dll" {
+		t.Fatalf("missing DirectX files = %#v, want xaudio2_7.dll", missing)
+	}
+}
+
+func TestDirectXRepairSourceRequiresExecutableAndDataDirectory(t *testing.T) {
+	root := t.TempDir()
+	if _, err := directXRepairExecutable(root); err == nil {
+		t.Fatal("repair source without executable and Data directory was accepted")
+	}
+	if err := os.Mkdir(filepath.Join(root, "Data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(root, "DirectX Repair.exe")
+	if err := os.WriteFile(executable, []byte("repair"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := directXRepairExecutable(root)
+	if err != nil || got != executable {
+		t.Fatalf("repair executable = %q, %v; want %q", got, err, executable)
+	}
+}
+
+func TestDirectXRepairDoesNotEmbedAUserSpecificPath(t *testing.T) {
+	data, err := os.ReadFile("directx.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := `C:\Users\` + "Ad" + "min"
+	if strings.Contains(string(data), privatePath) {
+		t.Fatal("DirectX repair source embeds a user-specific Windows path")
+	}
+}
+
+func TestServerStartupFailureExplainsEarlyExit(t *testing.T) {
+	err := serverStartupFailure(errors.New("exit status 3221225781"), "")
+	if !strings.Contains(err.Error(), "启动后立即退出") || !strings.Contains(err.Error(), "DirectX") {
+		t.Fatalf("startup error is not actionable: %v", err)
+	}
+}
+
 func TestSteamCMDErrorIncludesActionableMissingConfigurationMessage(t *testing.T) {
 	err := formatSteamCMDError(errors.New("exit status 7"), []string{"ERROR! Failed to install app '2394010' (Missing configuration)"})
 	if !strings.Contains(err.Error(), "AppInfo") || !strings.Contains(err.Error(), "steamcmd.log") {

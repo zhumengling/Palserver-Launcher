@@ -216,6 +216,10 @@ func (a *App) QuickSetup(name, installRoot string) (ServerInstance, error) {
 	if err := os.MkdirAll(instance.RootPath, 0o755); err != nil {
 		return ServerInstance{}, err
 	}
+	progress("正在检查 DirectX 运行库", 8)
+	if err := ensureDirectXRuntime(func(message string) { progress(message, 12) }); err != nil {
+		return ServerInstance{}, err
+	}
 	if err := ensureSteamCMD(instance.SteamCMDPath, progress); err != nil {
 		return ServerInstance{}, err
 	}

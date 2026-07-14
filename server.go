@@ -141,6 +141,9 @@ func (a *App) StartServer(id string) error {
 	if _, err := os.Stat(instance.Executable); err != nil {
 		return fmt.Errorf("server executable not found: %w", err)
 	}
+	if err := ensureDirectXRuntime(nil); err != nil {
+		return fmt.Errorf("无法启动服务器：%w", err)
+	}
 	if err := applyPerformanceConfig(instance); err != nil {
 		return fmt.Errorf("apply Engine.ini: %w", err)
 	}
@@ -180,17 +183,48 @@ func (a *App) StartServer(id string) error {
 		_ = logFile.Close()
 		return err
 	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	select {
+	case waitErr := <-exited:
+		_ = logFile.Close()
+		return serverStartupFailure(waitErr, readLogTail(logFile.Name()))
+	case <-time.After(3 * time.Second):
+	}
 	a.onServerStarted(id, time.Now())
 	a.scheduleAutoRestart(instance)
 	runtime.EventsEmit(a.ctx, "server:started", id, cmd.Process.Pid)
 	a.notifyDiscord(id, "start", "服务器已启动", instance.Name)
 	go func() {
-		err := cmd.Wait()
+		err := <-exited
 		_ = logFile.Close()
 		runtime.EventsEmit(a.ctx, "server:exited", id, fmt.Sprint(err))
 		a.handleServerExit(instance, err)
 	}()
 	return nil
+}
+
+func readLogTail(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	const maxTailBytes = 1600
+	if len(data) > maxTailBytes {
+		data = data[len(data)-maxTailBytes:]
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func serverStartupFailure(waitErr error, logTail string) error {
+	message := "服务器进程在启动后立即退出。请先检查 DirectX 运行库；启动器会在创建或启动服务器时自动修复缺失组件。"
+	if logTail != "" {
+		message += " 最近日志：" + logTail
+	}
+	if waitErr != nil {
+		message += " 进程错误：" + waitErr.Error()
+	}
+	return errors.New(message)
 }
 
 func (a *App) StopServer(id string) error {
