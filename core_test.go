@@ -758,6 +758,12 @@ func TestBackupListingSkipsDirectoryEntriesThatDisappearDuringScan(t *testing.T)
 	}
 }
 
+func TestDirEntryInfoRejectsEntriesThatDisappearDuringScan(t *testing.T) {
+	if _, ok := readableDirEntryInfo(failingBackupDirEntry{}); ok {
+		t.Fatal("disappeared directory entry returned file metadata")
+	}
+}
+
 func TestGuardianUsesFailureThresholdAndRestartBudget(t *testing.T) {
 	if guardianFailureReached(2, 3) {
 		t.Fatal("guardian restarted before reaching failure threshold")

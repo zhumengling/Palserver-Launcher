@@ -119,12 +119,17 @@ func dirSize(path string) int64 {
 	return total
 }
 
+func readableDirEntryInfo(entry os.DirEntry) (os.FileInfo, bool) {
+	info, err := entry.Info()
+	return info, err == nil && info != nil
+}
+
 func backupEntryFromDirEntry(root string, entry os.DirEntry) (BackupEntry, bool) {
 	if !entry.IsDir() {
 		return BackupEntry{}, false
 	}
-	info, err := entry.Info()
-	if err != nil || !info.IsDir() {
+	info, ok := readableDirEntryInfo(entry)
+	if !ok || !info.IsDir() {
 		return BackupEntry{}, false
 	}
 	path := filepath.Join(root, entry.Name())
@@ -489,7 +494,10 @@ func (a *App) ListMods(id string) ([]ModEntry, error) {
 			if kind == "dll" && (!strings.Contains(lower, ".dll") || strings.HasPrefix(lower, "palserver") || strings.HasPrefix(lower, "ue4ss") || strings.HasPrefix(lower, "paldefender")) {
 				continue
 			}
-			info, _ := entry.Info()
+			info, ok := readableDirEntryInfo(entry)
+			if !ok {
+				continue
+			}
 			origin, description, system := classifyMod(kind, name)
 			result = append(result, ModEntry{Name: strings.TrimSuffix(name, ".disabled"), Kind: kind, Origin: origin, Description: description, System: system, Path: filepath.Join(root, name), Enabled: !strings.HasSuffix(lower, ".disabled"), Size: info.Size()})
 		}
