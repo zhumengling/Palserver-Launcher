@@ -208,7 +208,7 @@ function Overview({ instance, status, busy, onEdit, onRun, onDeleted }: { instan
     <div className="two-columns">
       <section className="panel"><div className="panel-heading"><div><h2>服务器控制</h2><p>生命周期与程序更新</p></div><button className="ghost" onClick={onEdit}><Settings size={15}/>编辑实例</button></div>
         <div className="action-list"><ActionRow icon={Download} title="安全更新服务器" detail="检测版本并执行备份、提醒、停服和重启" action="更新" onClick={() => onRun('install', () => API.PerformManagedUpdate(instance.id, false), '服务器更新完成')}/>
-        <ActionRow icon={Archive} title="打开服务器目录" detail={instance.rootPath} action="打开" onClick={() => API.OpenPath(instance.rootPath)}/>
+        <ActionRow icon={Archive} title="打开服务器目录" detail={instance.rootPath} action="打开" onClick={() => onRun('open-server-path', () => API.OpenPath(instance.rootPath), '服务器目录已打开')}/>
         <ActionRow icon={Trash2} title="强制结束进程" detail="仅在正常停止无效时使用" action="强停" danger disabled={!status.running || !!busy} onClick={() => confirm('确定强制结束服务器进程？') && onRun('force', () => API.ForceStopServer(instance.id), '服务器进程已结束')}/>
         <ActionRow icon={Trash2} title="移除服务器" detail="移除启动器记录，或连同服务器文件一起删除" action="移除" danger disabled={status.running || !!busy} onClick={() => { if (!confirm('确定移除这个服务器？')) return; const files = confirm('是否同时删除服务器文件和存档？\n点击“确定”删除文件，点击“取消”仅移除记录。'); onRun('delete-server', async () => { await API.DeleteInstance(instance.id, files); await onDeleted(); }, files ? '服务器和文件已删除' : '服务器已从启动器移除'); }}/></div>
       </section>

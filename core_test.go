@@ -145,6 +145,16 @@ func TestFrontendPlayerRewardsAndWorldMapAreExposed(t *testing.T) {
 	}
 }
 
+func TestOpenServerDirectoryUsesTheSharedActionErrorHandler(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `onRun('open-server-path', () => API.OpenPath(instance.rootPath), '服务器目录已打开')`) {
+		t.Fatal("opening the server directory bypasses the shared action error handler")
+	}
+}
+
 func TestRCONProbeStopsAfterAuthentication(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
