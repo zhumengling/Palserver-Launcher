@@ -745,6 +745,19 @@ func TestClaimBackupDestinationIsSafeForConcurrentBackups(t *testing.T) {
 	}
 }
 
+type failingBackupDirEntry struct{}
+
+func (failingBackupDirEntry) Name() string               { return "partial-backup" }
+func (failingBackupDirEntry) IsDir() bool                { return true }
+func (failingBackupDirEntry) Type() os.FileMode          { return os.ModeDir }
+func (failingBackupDirEntry) Info() (os.FileInfo, error) { return nil, errors.New("entry disappeared") }
+
+func TestBackupListingSkipsDirectoryEntriesThatDisappearDuringScan(t *testing.T) {
+	if _, ok := backupEntryFromDirEntry(t.TempDir(), failingBackupDirEntry{}); ok {
+		t.Fatal("backup listing accepted an entry whose metadata could not be read")
+	}
+}
+
 func TestGuardianUsesFailureThresholdAndRestartBudget(t *testing.T) {
 	if guardianFailureReached(2, 3) {
 		t.Fatal("guardian restarted before reaching failure threshold")

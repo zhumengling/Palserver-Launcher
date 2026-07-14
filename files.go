@@ -119,6 +119,18 @@ func dirSize(path string) int64 {
 	return total
 }
 
+func backupEntryFromDirEntry(root string, entry os.DirEntry) (BackupEntry, bool) {
+	if !entry.IsDir() {
+		return BackupEntry{}, false
+	}
+	info, err := entry.Info()
+	if err != nil || !info.IsDir() {
+		return BackupEntry{}, false
+	}
+	path := filepath.Join(root, entry.Name())
+	return BackupEntry{Name: entry.Name(), Path: path, CreatedAt: info.ModTime().UnixMilli(), Size: dirSize(path)}, true
+}
+
 func (a *App) ListBackups(id string) ([]BackupEntry, error) {
 	dir, err := appDataDir()
 	if err != nil {
@@ -134,11 +146,9 @@ func (a *App) ListBackups(id string) ([]BackupEntry, error) {
 	}
 	result := make([]BackupEntry, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if backup, ok := backupEntryFromDirEntry(root, entry); ok {
+			result = append(result, backup)
 		}
-		info, _ := entry.Info()
-		result = append(result, BackupEntry{Name: entry.Name(), Path: filepath.Join(root, entry.Name()), CreatedAt: info.ModTime().UnixMilli(), Size: dirSize(filepath.Join(root, entry.Name()))})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt > result[j].CreatedAt })
 	return result, nil

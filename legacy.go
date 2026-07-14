@@ -38,12 +38,9 @@ func discoverOfficialBackups(saveRoot string) ([]BackupEntry, error) {
 	}
 	result := make([]BackupEntry, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if backup, ok := backupEntryFromDirEntry(root, entry); ok {
+			result = append(result, backup)
 		}
-		info, _ := entry.Info()
-		path := filepath.Join(root, entry.Name())
-		result = append(result, BackupEntry{Name: entry.Name(), Path: path, CreatedAt: info.ModTime().UnixMilli(), Size: dirSize(path)})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt > result[j].CreatedAt })
 	return result, nil
