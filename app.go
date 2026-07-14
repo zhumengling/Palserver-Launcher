@@ -18,6 +18,7 @@ type App struct {
 	ctx                context.Context
 	store              *Store
 	processMu          sync.Mutex
+	processTuningMu    sync.Mutex
 	serverStartMu      sync.Mutex
 	operationMu        sync.Mutex
 	expectedStops      map[string]bool
@@ -52,6 +53,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.startMaintenanceLoop()
 	go a.startAutomaticFrpClients()
+	go func() { _ = a.rebalanceServerProcesses() }()
 }
 
 func (a *App) shutdown(context.Context) {
@@ -75,7 +77,16 @@ func (a *App) SaveInstance(instance ServerInstance) (ServerInstance, error) {
 	if err := syncInstanceWorldSettings(instance); err != nil {
 		return ServerInstance{}, fmt.Errorf("sync server settings: %w", err)
 	}
-	return a.store.Upsert(instance)
+	stored, err := a.store.Upsert(instance)
+	if err != nil {
+		return ServerInstance{}, err
+	}
+	go func() {
+		if tuningErr := a.rebalanceServerProcesses(); tuningErr != nil {
+			appendProcessTuningWarning(stored, tuningErr)
+		}
+	}()
+	return stored, nil
 }
 
 func (a *App) DuplicateInstance(id string) (ServerInstance, error) {
@@ -109,17 +120,24 @@ func duplicateInstanceFiles(source, destination string) error {
 	return copyTree(source, destination)
 }
 
+func validateInstanceRemoval(running bool) error {
+	if running {
+		return errors.New("stop the server before removing it from the launcher")
+	}
+	return nil
+}
+
 func (a *App) DeleteInstance(id string, deleteFiles bool) error {
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
 	}
+	status, _ := serverStatus(instance)
+	if err := validateInstanceRemoval(status.Running); err != nil {
+		return err
+	}
 	_ = a.StopFrp(id)
 	if deleteFiles {
-		status, _ := serverStatus(instance)
-		if status.Running {
-			return errors.New("stop the server before deleting files")
-		}
 		if err := os.RemoveAll(instance.RootPath); err != nil {
 			return err
 		}
@@ -144,6 +162,7 @@ func (a *App) DeleteInstance(id string, deleteFiles bool) error {
 	delete(a.guardianLastCheck, id)
 	delete(a.guardianSuppressed, id)
 	a.processMu.Unlock()
+	go func() { _ = a.rebalanceServerProcesses() }()
 	return nil
 }
 

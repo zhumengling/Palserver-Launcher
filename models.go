@@ -15,6 +15,10 @@ type ServerInstance struct {
 	ServerPassword           string `json:"serverPassword"`
 	Community                bool   `json:"community"`
 	PerformanceMode          bool   `json:"performanceMode"`
+	LegacyPerformanceFlags   bool   `json:"legacyPerformanceFlags"`
+	WorkerThreads            int    `json:"workerThreads"`
+	ProcessPriority          string `json:"processPriority"`
+	CPUAffinityMode          string `json:"cpuAffinityMode"`
 	IconID                   string `json:"iconId"`
 	AutoRestartHours         int    `json:"autoRestartHours"`
 	CrashRestart             bool   `json:"crashRestart"`

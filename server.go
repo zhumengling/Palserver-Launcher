@@ -183,9 +183,7 @@ func (a *App) StartServer(id string) error {
 	if instance.Community {
 		args = append(args, "-publiclobby")
 	}
-	if instance.PerformanceMode {
-		args = append(args, "-useperfthreads", "-NoAsyncLoadingThread", "-UseMultithreadForDS")
-	}
+	args = append(args, performanceLaunchArgs(instance)...)
 	// PalServer.exe is a small launcher that creates the visible
 	// PalServer-Win64-Shipping-Cmd.exe console. Start the non-console Shipping
 	// binary directly when it is available so no child console is created.
@@ -226,15 +224,27 @@ func (a *App) StartServer(id string) error {
 		}
 	}
 	a.onServerStarted(id, time.Now())
+	if tuningErr := a.rebalanceServerProcesses(); tuningErr != nil {
+		appendProcessTuningWarning(instance, tuningErr)
+	}
 	a.scheduleAutoRestart(instance)
 	runtime.EventsEmit(a.ctx, "server:started", id, cmd.Process.Pid)
 	a.notifyDiscord(id, "start", "服务器已启动", instance.Name)
 	if usesPalServerWrapper(launchPath) {
-		go func() { _ = <-exited; _ = logFile.Close() }()
+		go func() {
+			_ = <-exited
+			_ = logFile.Close()
+			if tuningErr := a.rebalanceServerProcesses(); tuningErr != nil {
+				appendProcessTuningWarning(instance, tuningErr)
+			}
+		}()
 	} else {
 		go func() {
 			err := <-exited
 			_ = logFile.Close()
+			if tuningErr := a.rebalanceServerProcesses(); tuningErr != nil {
+				appendProcessTuningWarning(instance, tuningErr)
+			}
 			runtime.EventsEmit(a.ctx, "server:exited", id, fmt.Sprint(err))
 			a.handleServerExit(instance, err)
 		}()
@@ -278,10 +288,12 @@ func (a *App) StopServer(id string) error {
 		return nil
 	}
 	if _, err := restPost(instance, "/shutdown", map[string]any{"waittime": 5, "message": "Server maintenance"}); err == nil {
+		a.rebalanceAfterServerExit(instance)
 		a.notifyDiscord(id, "stop", "服务器正在停止", instance.Name)
 		return nil
 	}
 	if _, err := sendRCON(instance, "Shutdown 5 Server maintenance"); err == nil {
+		a.rebalanceAfterServerExit(instance)
 		a.notifyDiscord(id, "stop", "服务器正在停止", instance.Name)
 		return nil
 	}
@@ -293,6 +305,9 @@ func (a *App) StopServer(id string) error {
 		for time.Now().Before(deadline) {
 			current, _ := serverStatus(instance)
 			if !current.Running {
+				if tuningErr := a.rebalanceServerProcesses(); tuningErr != nil {
+					appendProcessTuningWarning(instance, tuningErr)
+				}
 				a.notifyDiscord(id, "stop", "服务器已停止", instance.Name)
 				return nil
 			}
@@ -320,6 +335,7 @@ func (a *App) ForceStopServer(id string) error {
 		a.setGuardianSuppressed(id, false)
 		return err
 	}
+	a.rebalanceAfterServerExit(instance)
 	return nil
 }
 

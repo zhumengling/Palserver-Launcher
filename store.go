@@ -33,6 +33,19 @@ func NewStore() (*Store, error) {
 		if err := json.Unmarshal(data, &s.config); err != nil {
 			return nil, err
 		}
+		migrated := false
+		for index := range s.config.Instances {
+			updated := withDefaults(s.config.Instances[index])
+			if updated.ProcessPriority != s.config.Instances[index].ProcessPriority || updated.CPUAffinityMode != s.config.Instances[index].CPUAffinityMode || updated.WorkerThreads != s.config.Instances[index].WorkerThreads {
+				migrated = true
+			}
+			s.config.Instances[index] = updated
+		}
+		if migrated {
+			if err := s.saveLocked(); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return s, nil
 }
@@ -443,6 +456,22 @@ func withDefaults(instance ServerInstance) ServerInstance {
 	}
 	if instance.IconID == "" {
 		instance.IconID = "SheepBall"
+	}
+	if instance.WorkerThreads < 0 {
+		instance.WorkerThreads = 0
+	}
+	if instance.WorkerThreads > 256 {
+		instance.WorkerThreads = 256
+	}
+	switch instance.ProcessPriority {
+	case "normal", "above_normal", "high":
+	default:
+		instance.ProcessPriority = "above_normal"
+	}
+	switch instance.CPUAffinityMode {
+	case "all", "auto":
+	default:
+		instance.CPUAffinityMode = "auto"
 	}
 	if instance.BackupRetentionMode == "" {
 		instance.BackupRetentionMode = "tiered"
