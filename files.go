@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -74,10 +75,21 @@ func appDataDir() (string, error) {
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
+func copyTreeEntryIsReparsePoint(info os.FileInfo) bool {
+	attributes, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	return ok && attributes.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
 func copyTree(source, destination string) error {
 	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || copyTreeEntryIsReparsePoint(info) {
+			return fmt.Errorf("copy source contains a symlink or reparse point: %s", path)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("copy source contains a non-regular entry: %s", path)
 		}
 		rel, err := filepath.Rel(source, path)
 		if err != nil {
@@ -94,17 +106,14 @@ func copyTree(source, destination string) error {
 		if err != nil {
 			return err
 		}
-		defer in.Close()
 		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode())
 		if err != nil {
-			return err
+			return errors.Join(err, in.Close())
 		}
 		_, copyErr := io.Copy(out, in)
+		inCloseErr := in.Close()
 		closeErr := out.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
+		return errors.Join(copyErr, inCloseErr, closeErr)
 	})
 }
 
@@ -188,6 +197,15 @@ func (a *App) CreateBackup(id string) (BackupEntry, error) {
 	}
 	if _, err := os.Stat(source); err != nil {
 		return BackupEntry{}, missingSaveDirectoryError()
+	}
+	status, _ := serverStatus(instance)
+	if err := flushWorldSaveBeforeBackup(instance, status.Running); err != nil {
+		return BackupEntry{}, fmt.Errorf("save world before backup: %w", err)
+	}
+	if status.Running {
+		if err := waitForSaveFilesStable(source); err != nil {
+			return BackupEntry{}, fmt.Errorf("wait for world save: %w", err)
+		}
 	}
 	base, err := appDataDir()
 	if err != nil {
@@ -319,8 +337,8 @@ func validateExtensionInstallation(base, extensionID string) error {
 			return errors.New("PalDefender 安装不完整：缺少 PalDefender.dll 或 d3d9.dll")
 		}
 	case "ue4ss":
-		if _, err := os.Stat(filepath.Join(base, "UE4SS.dll")); err != nil {
-			return errors.New("UE4SS 安装不完整：缺少 UE4SS.dll")
+		if _, installed, _ := ue4ssInstallationState(base); !installed {
+			return errors.New("UE4SS 安装不完整：缺少代理 DLL、核心 DLL 或设置文件")
 		}
 	default:
 		return errors.New("unknown extension")
@@ -334,54 +352,154 @@ func (a *App) ListExtensions(id string) ([]ExtensionStatus, error) {
 		return nil, err
 	}
 	base := win64Path(instance)
-	extensions := []struct{ id, name, file, disabled, version string }{
-		{"paldefender", "PalDefender", "PalDefender.dll", "PalDefender.disabled.dll", "palguard.version.txt"},
-		{"ue4ss", "UE4SS", "UE4SS.dll", "UE4SS.disabled.dll", "ue4ss.version.txt"},
+	extensions := []struct{ id, name, version string }{
+		{"paldefender", "PalDefender", "palguard.version.txt"},
+		{"ue4ss", "UE4SS", "ue4ss.version.txt"},
 	}
 	result := make([]ExtensionStatus, 0, len(extensions))
 	for _, extension := range extensions {
-		enabledPath, disabledPath := filepath.Join(base, extension.file), filepath.Join(base, extension.disabled)
 		installed, enabled := false, false
+		actualPath := ""
 		if extension.id == "paldefender" {
 			installed, enabled = palDefenderInstallationState(base)
+			actualPath = filepath.Join(base, "PalDefender.dll")
+			if installed && !enabled {
+				actualPath = filepath.Join(base, "PalDefender.disabled.dll")
+			}
 		} else {
-			_, enabledErr := os.Stat(enabledPath)
-			_, disabledErr := os.Stat(disabledPath)
-			installed, enabled = enabledErr == nil || disabledErr == nil, enabledErr == nil
+			actualPath, installed, enabled = ue4ssInstallationState(base)
 		}
 		versionData, _ := os.ReadFile(filepath.Join(base, extension.version))
-		result = append(result, ExtensionStatus{ID: extension.id, Name: extension.name, Installed: installed, Enabled: enabled, Version: strings.TrimSpace(string(versionData)), Path: enabledPath})
+		status := ExtensionStatus{
+			ID: extension.id, Name: extension.name, Installed: installed, Enabled: enabled,
+			Version: strings.TrimSpace(string(versionData)), Path: actualPath,
+		}
+		if manifestPath, pathErr := extensionInstalledManifestPath(instance, extension.id); pathErr == nil {
+			if manifest, manifestErr := readExtensionUpdateManifest(manifestPath); manifestErr == nil && manifest.ExtensionID == extension.id {
+				status.InstalledAsset = manifest.Asset.Name
+				status.InstalledUpdatedAt = manifest.Asset.UpdatedAt
+				if status.Version == "" {
+					status.Version = manifest.Version
+				}
+			}
+		}
+		if pending, pathErr := extensionPendingPath(instance, extension.id); pathErr == nil {
+			if manifest, manifestErr := readExtensionUpdateManifest(filepath.Join(pending, "manifest.json")); manifestErr == nil && manifest.ExtensionID == extension.id {
+				status.Pending = true
+				status.PendingVersion = manifest.Version
+			}
+		}
+		result = append(result, status)
 	}
 	return result, nil
 }
 
+func renameExtensionStateFileChanged(from, to string) (bool, error) {
+	if _, err := os.Stat(to); err == nil {
+		if _, fromErr := os.Stat(from); os.IsNotExist(fromErr) {
+			return false, nil
+		}
+		return false, errors.New("both enabled and disabled extension files exist")
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.Rename(from, to); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func renameExtensionStateFile(from, to string) error {
+	_, err := renameExtensionStateFileChanged(from, to)
+	return err
+}
+
+func toggleLegacyUE4SSState(base string, enabled bool, renameFn func(string, string) (bool, error)) error {
+	if renameFn == nil {
+		renameFn = renameExtensionStateFileChanged
+	}
+	coreFrom, coreTo := filepath.Join(base, "UE4SS.dll"), filepath.Join(base, "UE4SS.disabled.dll")
+	proxyFrom, proxyTo := filepath.Join(base, "dwmapi.dll"), filepath.Join(base, "dwmapi.disabled.dll")
+	if enabled {
+		coreFrom, coreTo = coreTo, coreFrom
+		proxyFrom, proxyTo = proxyTo, proxyFrom
+	}
+	coreChanged, err := renameFn(coreFrom, coreTo)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(proxyFrom); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if _, err := renameFn(proxyFrom, proxyTo); err != nil {
+		if coreChanged {
+			if _, rollbackErr := renameFn(coreTo, coreFrom); rollbackErr != nil {
+				return errors.Join(err, fmt.Errorf("rollback legacy UE4SS core state: %w", rollbackErr))
+			}
+		}
+		return err
+	}
+	return nil
+}
+
 func (a *App) ToggleExtension(id, extensionID string, enabled bool) error {
+	return a.toggleExtensionWith(id, extensionID, enabled, serverStatus)
+}
+
+func (a *App) toggleExtensionWith(id, extensionID string, enabled bool, statusFor func(ServerInstance) (RuntimeStatus, error)) error {
+	a.serverStartMu.Lock()
+	defer a.serverStartMu.Unlock()
+	a.extensionStageMu.Lock()
+	defer a.extensionStageMu.Unlock()
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
 	}
-	status, _ := serverStatus(instance)
+	if err := validateExtensionID(extensionID); err != nil {
+		return err
+	}
+	if statusFor == nil {
+		statusFor = serverStatus
+	}
+	status, err := statusFor(instance)
+	if err != nil {
+		return err
+	}
 	if status.Running {
 		return errors.New("stop the server before changing extensions")
 	}
-	files := map[string][2]string{"paldefender": {"PalDefender.dll", "PalDefender.disabled.dll"}, "ue4ss": {"UE4SS.dll", "UE4SS.disabled.dll"}}
-	pair, ok := files[extensionID]
-	if !ok {
+	base := win64Path(instance)
+	switch extensionID {
+	case "paldefender":
+		from, to := filepath.Join(base, "PalDefender.dll"), filepath.Join(base, "PalDefender.disabled.dll")
+		if enabled {
+			from, to = to, from
+		}
+		return renameExtensionStateFile(from, to)
+	case "ue4ss":
+		nested := regularNonEmptyFileExists(filepath.Join(base, "ue4ss", "UE4SS.dll")) && regularNonEmptyFileExists(filepath.Join(base, "ue4ss", "UE4SS-settings.ini"))
+		if nested {
+			from, to := filepath.Join(base, "dwmapi.dll"), filepath.Join(base, "dwmapi.disabled.dll")
+			if enabled {
+				from, to = to, from
+			}
+			return renameExtensionStateFile(from, to)
+		}
+		return toggleLegacyUE4SSState(base, enabled, renameExtensionStateFileChanged)
+	default:
 		return errors.New("unknown extension")
 	}
-	base := win64Path(instance)
-	from, to := filepath.Join(base, pair[0]), filepath.Join(base, pair[1])
-	if enabled {
-		from, to = to, from
-	}
-	return os.Rename(from, to)
 }
 
 type githubReleaseAsset struct {
+	ID                 int64  `json:"id"`
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Digest             string `json:"digest"`
 	Size               int64  `json:"size"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 type githubRelease struct {
@@ -486,68 +604,6 @@ func unzipSafe(archive, destination string) error {
 		}
 	}
 	return nil
-}
-
-func (a *App) UpdateExtension(id, extensionID string) (string, error) {
-	instance, err := a.store.Find(id)
-	if err != nil {
-		return "", err
-	}
-	status, _ := serverStatus(instance)
-	if status.Running {
-		return "", errors.New("stop the server before updating extensions")
-	}
-	base := win64Path(instance)
-	_ = os.MkdirAll(base, 0o755)
-	var version string
-	switch extensionID {
-	case "paldefender":
-		_, enabledErr := os.Stat(filepath.Join(base, "PalDefender.dll"))
-		_, disabledErr := os.Stat(filepath.Join(base, "PalDefender.disabled.dll"))
-		preserveDisabled := enabledErr != nil && disabledErr == nil
-		version, err = downloadLatestRelease("Ultimeit/PalDefender", base, func(name string) bool {
-			return strings.HasSuffix(name, ".zip") && strings.Contains(name, "paldefender")
-		})
-		if err == nil {
-			if preserveDisabled {
-				_ = os.Remove(filepath.Join(base, "PalDefender.disabled.dll"))
-				err = os.Rename(filepath.Join(base, "PalDefender.dll"), filepath.Join(base, "PalDefender.disabled.dll"))
-			} else {
-				_ = os.Remove(filepath.Join(base, "PalDefender.disabled.dll"))
-			}
-		}
-	case "ue4ss":
-		preserved := map[string][]byte{}
-		for _, relative := range []string{"UE4SS-settings.ini", filepath.Join("Mods", "mods.txt"), filepath.Join("ue4ss", "Mods", "mods.txt")} {
-			if data, readErr := os.ReadFile(filepath.Join(base, relative)); readErr == nil {
-				preserved[relative] = data
-			}
-		}
-		version, err = downloadLatestRelease("UE4SS-RE/RE-UE4SS", base, func(name string) bool {
-			return strings.HasSuffix(name, ".zip") && strings.Contains(name, "ue4ss") && !strings.Contains(name, "zdev")
-		})
-		for relative, data := range preserved {
-			_ = os.WriteFile(filepath.Join(base, relative), data, 0o600)
-		}
-	default:
-		return "", errors.New("unknown extension")
-	}
-	if err != nil {
-		return "", err
-	}
-	if err := validateExtensionInstallation(base, extensionID); err != nil {
-		return "", err
-	}
-	if extensionID == "paldefender" {
-		if err := os.MkdirAll(filepath.Join(base, "PalDefender"), 0o755); err != nil {
-			return "", err
-		}
-	}
-	versionFile := map[string]string{"paldefender": "palguard.version.txt", "ue4ss": "ue4ss.version.txt"}[extensionID]
-	if err := os.WriteFile(filepath.Join(base, versionFile), []byte(version+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return version, nil
 }
 
 func modRoots(instance ServerInstance) map[string]string {
@@ -763,6 +819,42 @@ func (a *App) RunDiagnostics(id string) ([]DiagnosticResult, error) {
 	} else {
 		results = append(results, DiagnosticResult{"1.0 模组兼容", "warn", fmt.Sprintf("发现 %d 个第三方模组；官方要求逐个确认 1.0 兼容性", userMods)})
 	}
+	if host, hostErr := a.GetHostResources(); hostErr == nil {
+		if host.MemoryTotalMB < 16*1024 {
+			results = append(results, DiagnosticResult{"内存容量", "warn", fmt.Sprintf("%.0f GB；官方建议至少 16 GB，大型服务器建议 32 GB", host.MemoryTotalMB/1024)})
+		} else if host.MemoryTotalMB < 32*1024 {
+			results = append(results, DiagnosticResult{"内存容量", "info", fmt.Sprintf("%.0f GB；满足基础建议，32 GB 更适合多人服务器", host.MemoryTotalMB/1024)})
+		} else {
+			results = append(results, DiagnosticResult{"内存容量", "ok", fmt.Sprintf("%.0f GB", host.MemoryTotalMB/1024)})
+		}
+	}
+	if media, mediaErr := serverStorageMediaType(instance.RootPath); mediaErr == nil {
+		if strings.Contains(strings.ToLower(media), "ssd") || strings.Contains(strings.ToLower(media), "nvme") {
+			results = append(results, DiagnosticResult{"存档磁盘", "ok", media})
+		} else {
+			results = append(results, DiagnosticResult{"存档磁盘", "warn", media + "；官方建议将存档放在 SSD，低性能磁盘可能损坏存档"})
+		}
+	}
+	if listening, listenErr := udpPortListening(instance.PublicPort); listenErr == nil {
+		status := "warn"
+		detail := fmt.Sprintf("UDP %d 未监听（服务器停止时属正常）", instance.PublicPort)
+		if listening {
+			status, detail = "ok", fmt.Sprintf("UDP %d 正在监听", instance.PublicPort)
+		}
+		results = append(results, DiagnosticResult{"游戏 UDP 端口", status, detail})
+	}
+	if allowed, firewallErr := firewallAllowsUDP(instance.PublicPort); firewallErr == nil {
+		status := "warn"
+		detail := fmt.Sprintf("未检测到允许 UDP %d 的入站防火墙规则", instance.PublicPort)
+		if allowed {
+			status, detail = "ok", fmt.Sprintf("检测到允许 UDP %d 的入站防火墙规则", instance.PublicPort)
+		}
+		results = append(results, DiagnosticResult{"Windows 防火墙", status, detail})
+	}
+	if instance.Community && instance.PublicIP != "" {
+		results = append(results, DiagnosticResult{"社区服本地回环", "info", "若同一局域网无法通过公网地址连接，请检查路由器是否支持 Hairpin NAT"})
+	}
+	results = append(results, DiagnosticResult{"RCON 兼容通道", "warn", "官方 1.0 文档已将 RCON 标记为 Deprecated；玩家管理优先使用 REST API"})
 	for name, port := range map[string]int{"REST": instance.RESTPort, "RCON": instance.RCONPort} {
 		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
 		if dialErr == nil {
@@ -779,4 +871,26 @@ func (a *App) RunDiagnostics(id string) ([]DiagnosticResult, error) {
 	}
 	results = append(results, DiagnosticResult{"FRP 转发", "info", "游戏连接使用 UDP 端口；请确认公网 UDP 转发到本机游戏端口，TCP 8211 不是客户端连接端口。"})
 	return results, nil
+}
+
+func serverStorageMediaType(root string) (string, error) {
+	volume := strings.TrimSuffix(filepath.VolumeName(filepath.Clean(root)), `\`)
+	if volume == "" {
+		return "", errors.New("server drive was not found")
+	}
+	query := `$letter='` + strings.TrimSuffix(volume, `:`) + `'; $disk=Get-Partition -DriveLetter $letter -ErrorAction Stop | Get-Disk; ($disk.BusType.ToString() + ' / ' + $disk.MediaType.ToString())`
+	output, err := newHiddenPowerShell(query).Output()
+	return strings.TrimSpace(string(output)), err
+}
+
+func udpPortListening(port int) (bool, error) {
+	query := fmt.Sprintf(`[bool](Get-NetUDPEndpoint -LocalPort %d -ErrorAction SilentlyContinue | Select-Object -First 1) | ConvertTo-Json -Compress`, port)
+	output, err := newHiddenPowerShell(query).Output()
+	return strings.EqualFold(strings.TrimSpace(string(output)), "true"), err
+}
+
+func firewallAllowsUDP(port int) (bool, error) {
+	query := fmt.Sprintf(`$rules=Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction Stop; [bool]($rules | Get-NetFirewallPortFilter | Where-Object { $_.Protocol -eq 'UDP' -and ($_.LocalPort -eq 'Any' -or $_.LocalPort -eq '%d') } | Select-Object -First 1) | ConvertTo-Json -Compress`, port)
+	output, err := newHiddenPowerShell(query).Output()
+	return strings.EqualFold(strings.TrimSpace(string(output)), "true"), err
 }

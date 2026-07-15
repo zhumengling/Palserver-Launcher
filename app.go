@@ -20,6 +20,7 @@ type App struct {
 	processMu          sync.Mutex
 	processTuningMu    sync.Mutex
 	serverStartMu      sync.Mutex
+	extensionStageMu   sync.Mutex
 	operationMu        sync.Mutex
 	expectedStops      map[string]bool
 	restartCancels     map[string]chan struct{}

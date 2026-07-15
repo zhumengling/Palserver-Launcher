@@ -20,8 +20,8 @@ const labels: Record<string, string> = {
 
 const booleanKeys = new Set([...Object.values(groups).flat().filter((key) => key.startsWith('b')), 'RCONEnabled', 'RESTAPIEnabled', 'EnablePredatorBossPal']);
 const stringKeys = new Set(['ServerName','ServerDescription','PublicIP','Region','BanListURL','CrossplayPlatforms','RandomizerSeed','DenyTechnologyList','AdditionalDropItemWhenPlayerKillingInPvPMode']);
-const optionValues: Record<string, string[]> = { DeathPenalty: ['全部保留惩罚','无惩罚','仅物品','物品和装备'], RandomizerType: ['关闭','普通','高随机'], LogFormatType: ['文本','JSON'] };
-const optionStorageValues: Record<string, string[]> = { DeathPenalty: ['All','None','Item','ItemAndEquipment'], RandomizerType: ['None','1','2'], LogFormatType: ['Text','Json'] };
+const optionValues: Record<string, string[]> = { DeathPenalty: ['全部保留惩罚','无惩罚','仅物品','物品和装备'], RandomizerType: ['关闭','区域随机','全局随机'], LogFormatType: ['文本','JSON'] };
+const optionStorageValues: Record<string, string[]> = { DeathPenalty: ['All','None','Item','ItemAndEquipment'], RandomizerType: ['None','Region','All'], LogFormatType: ['Text','Json'] };
 
 const extraLabels: Record<string, string> = {
   bPalLost:'帕鲁死亡掉落', bIsRandomizerPalLevelRandom:'帕鲁等级随机化', bAllowGlobalPalboxExport:'允许跨界帕鲁终端导出', bAllowGlobalPalboxImport:'允许跨界帕鲁终端导入',
@@ -38,6 +38,7 @@ const settingRanges: Record<string, [number, number, number]> = {
   DropItemMaxNum: [0, 10000, 100], PhysicsActiveDropItemMaxNum: [-1, 10000, 1], AutoResetGuildTimeNoOnlinePlayers: [0, 720, 1],
   PublicPort: [1, 65535, 1], RCONPort: [1, 65535, 1], RESTAPIPort: [1, 65535, 1], ChatPostLimitPerMinute: [0, 1000, 1],
   AutoTransferMasterCheckIntervalSeconds: [60, 86400, 60], AutoTransferMasterThresholdDays: [0, 365, 1], BuildingNameDisplayCacheTTLSeconds: [0, 3600, 1],
+	ServerReplicatePawnCullDistance: [5000, 15000, 100], BaseCampWorkerMaxNum: [0, 50, 1], BaseCampMaxNumInGuild: [0, 10, 1],
 };
 
 function settingRange(key: string): [number, number, number] {
@@ -80,7 +81,7 @@ export default function WorldSettingsView({ id, running, run }: { id: string; ru
   const saveStructured = () => run('save-world-settings', async () => { await API.SaveWorldSettingsValues(id, values); await load(); }, '世界设置已保存');
   const saveRaw = () => run('save-world-settings-raw', async () => { await API.WriteWorldSettings(id, raw); await load(); }, '原始配置已保存');
   return <section className="panel settings-panel">
-    <div className="panel-heading"><div><h2>世界设置</h2><p>结构化编辑覆盖旧版全部设置，原始模式保留完整控制</p></div><div className="toolbar"><div className="segmented"><button className={mode === 'structured' ? 'active' : ''} onClick={() => setMode('structured')}><SlidersHorizontal size={14}/>结构化</button><button className={mode === 'raw' ? 'active' : ''} onClick={() => setMode('raw')}><FileCode2 size={14}/>原始配置</button></div><button className="primary" disabled={running} onClick={mode === 'structured' ? saveStructured : saveRaw}><Save size={15}/>保存</button></div></div>
+    <div className="panel-heading"><div><h2>世界设置</h2><p>结构化编辑覆盖旧版全部设置，原始模式保留完整控制</p></div><div className="toolbar"><div className="segmented"><button className={mode === 'structured' ? 'active' : ''} onClick={() => setMode('structured')}><SlidersHorizontal size={14}/>结构化</button><button className={mode === 'raw' ? 'active' : ''} onClick={() => setMode('raw')}><FileCode2 size={14}/>原始配置</button></div><button className="ghost" disabled={running} onClick={() => run('official-pvp-preset', async () => { await API.ApplyOfficialPvPPreset(id); await load(); }, '官方竞技 PvP 预设已应用')} title="含 PvP 联动、科技禁用、据点限制、复活惩罚和冠军徽章奖励">官方竞技 PvP 预设</button><button className="primary" disabled={running} onClick={mode === 'structured' ? saveStructured : saveRaw}><Save size={15}/>保存</button></div></div>
     {running && <div className="inline-warning">停止服务器后才能保存设置。</div>}
     {mode === 'raw' ? <textarea className="code-editor" spellCheck={false} value={raw} onChange={(event) => setRaw(event.target.value)}/> : <div className="settings-groups">
       {Object.entries(groups).map(([group, keys]) => <section className="settings-group" key={group}><h3>{group}</h3><div className="settings-fields">{keys.filter((key) => settingVisible(key, values)).map((key) => <label key={key}><span><strong>{labels[key] || key}</strong><small>{key}</small></span>{booleanKeys.has(key) ? <input type="checkbox" checked={(values[key] || 'False').toLowerCase() === 'true'} onChange={(event) => setValues({ ...values, [key]: event.target.checked ? 'True' : 'False' })}/> : optionValues[key] ? <select value={optionStorageValues[key].indexOf(values[key] || optionStorageValues[key][0]) >= 0 ? optionValues[key][optionStorageValues[key].indexOf(values[key] || optionStorageValues[key][0])] : optionValues[key][0]} onChange={(event) => { const index = optionValues[key].indexOf(event.target.value); setValues({ ...values, [key]: optionStorageValues[key][index] || event.target.value }); }}>{optionValues[key].map((option) => <option key={option}>{option}</option>)}</select> : stringKeys.has(key) ? <input type="text" value={values[key] || ''} onChange={(event) => setValues({ ...values, [key]: event.target.value })}/> : <SettingNumber keyName={key} value={values[key] || ''} onChange={(next) => setValues({ ...values, [key]: next })}/>}</label>)}</div></section>)}

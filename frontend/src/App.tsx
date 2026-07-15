@@ -22,18 +22,20 @@ import GroupedModsView from './ModsView';
 import FrpView from './FrpView';
 import MapView from './MapView';
 import ServerPerformanceSettings from './ServerPerformanceSettings';
+import OfficialApiView from './OfficialApiView';
 
 const GameCatalog = lazy(() => import('./GameCatalog'));
 
-type View = 'overview' | 'performance' | 'console' | 'players' | 'history' | 'automation' | 'events' | 'settings' | 'backups' | 'plugins' | 'mods' | 'map' | 'tools' | 'save-inspector' | 'frp' | 'diagnostics';
+type View = 'overview' | 'official-api' | 'performance' | 'console' | 'players' | 'history' | 'automation' | 'events' | 'settings' | 'backups' | 'plugins' | 'mods' | 'map' | 'tools' | 'save-inspector' | 'frp' | 'diagnostics';
 
 const emptyStatus = new main.RuntimeStatus({ running: false, pid: 0, players: 0, maxPlayers: 0, fps: 0, frameTime: 0, uptime: 0, cpu: 0, memoryMb: 0, restAvailable: false, rconAvailable: false, version: '' });
 const globalScope = '__global__';
 type Notice = { type: 'ok' | 'error'; text: string };
+type SharedRun = <T>(label: string, action: () => Promise<T>, success?: string | ((result: T) => string)) => Promise<void>;
 const defaultInstance = () => new main.ServerInstance({ id: '', name: '我的帕鲁服务器', rootPath: '', executable: '', steamCmdPath: '', publicIp: '', publicPort: 8211, queryPort: 27015, rconPort: 25575, restPort: 8212, adminPassword: '', serverPassword: '', community: true, performanceMode: true, legacyPerformanceFlags: false, workerThreads: 0, processPriority: 'above_normal', cpuAffinityMode: 'auto', iconId: 'SheepBall', autoRestartHours: 0, crashRestart: false, guardianEnabled: false, guardianFailureThreshold: 3, guardianCheckSeconds: 60, guardianMaxRestarts: 3, whitelistEnforced: false, backupRetentionMode: 'tiered', backupRetentionCount: 30, backupRetentionDays: 30, updateOnlyWhenEmpty: true, updateWarnMinutes: 5 });
 
 const nav = [
-  ['overview', '概览', LayoutDashboard], ['performance', '性能监控', Cpu], ['console', '控制台', Terminal], ['players', '在线玩家', Users],
+  ['overview', '概览', LayoutDashboard], ['official-api', '官方 API', ClipboardList], ['performance', '性能监控', Cpu], ['console', '控制台', Terminal], ['players', '在线玩家', Users],
   ['history', '玩家档案', History], ['automation', '自动化', Clock3], ['events', '活动与通知', BellRing],
   ['settings', '服务器设置', Settings], ['backups', '存档备份', DatabaseBackup], ['plugins', '插件', PlugZap],
   ['mods', '模组', Package], ['map', '在线地图', Map], ['tools', '维护工具', Wrench], ['save-inspector', '存档浏览', CalendarClock], ['frp', 'FRP 客户端', Network], ['diagnostics', '网络诊断', Activity],
@@ -49,7 +51,7 @@ function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupProgress, setSetupProgress] = useState({ message: '准备开始', percent: 0 });
-  const [launcherVersion, setLauncherVersion] = useState('v0.1.3');
+  const [launcherVersion, setLauncherVersion] = useState('v0.1.4');
   const [launcherUpdate, setLauncherUpdate] = useState<main.LauncherUpdateInfo | null>(null);
   const [launcherUpdateOpen, setLauncherUpdateOpen] = useState(false);
   const [launcherUpdateBusy, setLauncherUpdateBusy] = useState(false);
@@ -108,13 +110,14 @@ function App() {
   }, [refreshStatuses]);
   useEffect(() => EventsOn('setup:progress', (payload: { message: string; percent: number }) => setSetupProgress(payload)), []);
 
-  async function run(label: string, action: () => Promise<unknown>, success = '操作完成') {
+  async function run<T>(label: string, action: () => Promise<T>, success: string | ((result: T) => string) = '操作完成') {
     const scope = selected?.id || globalScope;
     setBusyByServer((current) => ({ ...current, [scope]: label }));
     setNoticeByServer((current) => ({ ...current, [scope]: null }));
     try {
-      await action();
-      setNoticeByServer((current) => ({ ...current, [scope]: { type: 'ok', text: success } }));
+      const result = await action();
+      const successText = typeof success === 'function' ? success(result) : success;
+      setNoticeByServer((current) => ({ ...current, [scope]: { type: 'ok', text: successText } }));
       const next = await reloadConfig();
       await refreshStatuses(next.instances || []);
     } catch (error) {
@@ -214,7 +217,8 @@ function App() {
         <section className="workspace">
           {!selected ? <Welcome onCreate={() => setSetupOpen(true)} onImport={importExisting}/> : <>
             {view === 'overview' && <Overview key={selected.id} instance={selected} status={status} busy={busy} onEdit={() => setEditor(new main.ServerInstance(selected))} onRun={run} onDeleted={async () => { await reloadConfig(); setView('overview'); }}/>}
-            {view === 'performance' && <PerformanceView key={selected.id} status={status}/>}
+            {view === 'official-api' && <OfficialApiView key={selected.id} id={selected.id} running={status.running} restAvailable={status.restAvailable} run={run}/>}
+            {view === 'performance' && <PerformanceView key={selected.id} id={selected.id} status={status}/>}
             {view === 'console' && <ConsoleView key={selected.id} id={selected.id} run={run}/>}
             {view === 'players' && <PlayersView key={selected.id} id={selected.id} run={run}/>}
             {view === 'history' && <PlayersHistoryView key={selected.id} id={selected.id} run={run}/>}
@@ -222,7 +226,7 @@ function App() {
             {view === 'events' && <EventsView key={selected.id} id={selected.id} run={run}/>}
             {view === 'settings' && <WorldSettingsView key={selected.id} id={selected.id} running={status.running} run={run}/>}
             {view === 'backups' && <BackupsView key={selected.id} instance={selected} running={status.running} run={run} onChanged={async () => { await reloadConfig(); }}/>}
-            {view === 'plugins' && <PluginsView key={selected.id} id={selected.id} running={status.running} run={run}/>}
+            {view === 'plugins' && <PluginsView key={selected.id} id={selected.id} running={status.running} busy={Boolean(busy)} run={run}/>}
             {view === 'mods' && <GroupedModsView key={selected.id} id={selected.id} running={status.running} run={run}/>}
             {view === 'map' && <MapView key={selected.id} id={selected.id}/>}
             {view === 'tools' && <ToolsView key={selected.id} instance={selected} running={status.running} run={run} onChanged={async () => { await reloadConfig(); }}/>}
@@ -276,16 +280,18 @@ function Overview({ instance, status, busy, onEdit, onRun, onDeleted }: { instan
   </div>;
 }
 
-function PerformanceView({ status }: { status: main.RuntimeStatus }) {
+function PerformanceView({ id, status }: { id: string; status: main.RuntimeStatus }) {
   const [host, setHost] = useState<main.HostResources>(new main.HostResources({ cpuPercent: 0, memoryPercent: 0, memoryUsedMb: 0, memoryTotalMb: 0 }));
+  const [advice, setAdvice] = useState<main.PerformanceAdvice[]>([]);
   useEffect(() => { const load = () => API.GetHostResources().then(setHost).catch(() => {}); load(); const timer = setInterval(load, 3000); return () => clearInterval(timer); }, []);
+  useEffect(() => { const load = () => API.GetPerformanceAdvice(id).then(setAdvice).catch(() => setAdvice([])); load(); const timer = setInterval(load, 6000); return () => clearInterval(timer); }, [id]);
   const metrics = [
     ['整机 CPU', host.cpuPercent, `${host.cpuPercent.toFixed(0)}%`, Cpu],
     ['整机内存', host.memoryPercent, `${(host.memoryUsedMb / 1024).toFixed(1)} / ${(host.memoryTotalMb / 1024).toFixed(1)} GB`, MemoryStick],
     ['服务器内存', host.memoryTotalMb ? status.memoryMb / host.memoryTotalMb * 100 : 0, `${status.memoryMb.toFixed(0)} MB`, Server],
     ['服务器帧率', Math.min(100, status.fps / 1.2), `${status.fps.toFixed(0)} FPS`, Gauge],
   ] as const;
-  return <div className="performance-grid">{metrics.map(([label, percent, value, Icon]) => <section className="panel performance-card" key={label}><div className="performance-title"><span><Icon size={18}/>{label}</span><strong>{value}</strong></div><div className="performance-bar"><span style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}/></div><small>{status.running ? '每 3 秒刷新' : label.startsWith('服务器') ? '服务器未运行' : '整机实时资源'}</small></section>)}</div>;
+  return <div className="stack"><div className="performance-grid">{metrics.map(([label, percent, value, Icon]) => <section className="panel performance-card" key={label}><div className="performance-title"><span><Icon size={18}/>{label}</span><strong>{value}</strong></div><div className="performance-bar"><span style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}/></div><small>{status.running ? '每 3 秒刷新' : label.startsWith('服务器') ? '服务器未运行' : '整机实时资源'}</small></section>)}</div><section className="panel"><div className="panel-heading"><div><h2>性能顾问</h2><p>根据官方指标、据点数量和世界配置给出负载建议</p></div><span className="badge">据点 {status.baseCampNum} · 世界第 {status.worldDays} 天</span></div><div className="compact-list">{advice.map((item) => <div key={`${item.title}-${item.setting}`}><span><strong>{item.title}</strong><small>{item.detail}{item.setting ? ` · ${item.setting}` : ''}</small></span><span className={`badge ${item.level === 'warn' ? 'danger-badge' : ''}`}>{item.level === 'warn' ? '注意' : '建议'}</span></div>)}{!advice.length && <span className="compact-empty">当前没有需要处理的性能建议</span>}</div></section></div>;
 }
 
 function ActionRow({ icon: Icon, title, detail, action, onClick, danger, disabled }: any) { return <div className="action-row"><div className="action-icon"><Icon size={17}/></div><div><strong>{title}</strong><span>{detail}</span></div><button className={danger ? 'text-danger' : 'ghost'} disabled={disabled} onClick={onClick}>{action}</button></div>; }
@@ -334,7 +340,51 @@ function PlayerDialog({ player, onClose, onAction }: { player: main.Player; onCl
 
 function SettingsView({ id, running, run }: { id: string; running: boolean; run: Function }) { const [content, setContent] = useState(''); useEffect(() => { API.ReadWorldSettings(id).then(setContent); }, [id]); return <section className="panel"><div className="panel-heading"><div><h2>PalWorldSettings.ini</h2><p>结构化设置将在后续版本继续扩展，当前可完整编辑官方配置</p></div><button className="primary" disabled={running} onClick={() => run('save-settings', () => API.WriteWorldSettings(id, content), '设置已保存')}><Save size={15}/>保存</button></div>{running && <div className="inline-warning">停止服务器后才能保存设置。</div>}<textarea className="code-editor" spellCheck={false} value={content} onChange={(e) => setContent(e.target.value)}/></section>; }
 
-function PluginsView({ id, running, run }: { id: string; running: boolean; run: Function }) { const [items, setItems] = useState<main.ExtensionStatus[]>([]); const refresh = useCallback(() => API.ListExtensions(id).then(setItems), [id]); useEffect(() => { refresh(); }, [refresh]); return <div className="plugin-grid">{items.map((item) => <section className="panel plugin" key={item.id}><div className="plugin-icon">{item.id === 'paldefender' ? <Shield size={24}/> : <FileCode2 size={24}/>}</div><div><h2>{item.name}</h2><p>{item.installed ? `版本 ${item.version || '未知'}` : '尚未安装'}</p></div><span className={`badge ${item.enabled ? 'success' : ''}`}>{item.enabled ? '已启用' : item.installed ? '已停用' : '未安装'}</span><div className="plugin-actions">{item.id === 'paldefender' && item.installed && <button className="ghost" onClick={() => run('open-paldefender-config', () => API.OpenServerPath(id, 'paldefender'), 'PalDefender 配置已打开')}><FolderOpen size={14}/>配置</button>}<button className="ghost" disabled={running || !item.installed} onClick={() => run('toggle-plugin', async () => { await API.ToggleExtension(id, item.id, !item.enabled); await refresh(); }, '插件状态已更新')}>{item.enabled ? '停用' : '启用'}</button><button className="primary" disabled={running} onClick={() => run('update-plugin', async () => { await API.UpdateExtension(id, item.id); await refresh(); }, `${item.name} 已更新`)}><Download size={15}/>安装/更新</button></div></section>)}</div>; }
+function PluginsView({ id, running, busy, run }: { id: string; running: boolean; busy: boolean; run: SharedRun }) {
+  const [items, setItems] = useState<main.ExtensionStatus[]>([]);
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState('');
+  const refreshGeneration = useRef(0);
+  const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
+    const commitRefresh = (action: () => void) => { if (generation === refreshGeneration.current) action(); };
+    commitRefresh(() => { setChecking(true); setCheckError(''); });
+    try {
+      const local = await API.ListExtensions(id);
+      commitRefresh(() => setItems(local));
+      try {
+        const checked = await API.CheckExtensionUpdates(id);
+        commitRefresh(() => setItems(checked));
+      } catch (error) {
+        commitRefresh(() => setCheckError(`在线检查失败，本地插件状态已保留：${String(error)}`));
+      }
+    } catch (error) {
+      commitRefresh(() => { setItems([]); setCheckError(`读取插件状态失败：${String(error)}`); });
+    } finally {
+      commitRefresh(() => setChecking(false));
+    }
+  }, [id]);
+  useEffect(() => { void refresh(); return () => { refreshGeneration.current++; }; }, [refresh]);
+  const hasUpdateCandidates = items.some((item) => item.installed && item.updateAvailable && !item.pending);
+  return <div className="plugin-page">
+    <section className="panel plugin-page-header" aria-busy={checking || busy}>
+      <div><h2>插件更新</h2><p>检查远程版本；服务器运行时可先下载，并在重启时应用。</p>{checkError && <div className="plugin-page-error" role="status">{checkError}</div>}</div>
+      <div className="plugin-page-actions">
+        <button type="button" className="ghost" title="重新检查插件更新" disabled={busy || checking} onClick={() => void refresh()}><RefreshCw className={checking ? 'spin' : ''} size={15}/>{checking ? '检查中' : '重新检查'}</button>
+        <button type="button" className="primary" title="更新所有发现新版本的已安装插件" disabled={busy || checking || !hasUpdateCandidates} onClick={() => run('update-all-plugins', async () => { const result = await API.UpdateAllExtensions(id); await refresh(); return result; }, (result: main.ExtensionUpdateResult[]) => result.some((entry) => entry.pending) ? '插件更新已下载，重启时应用' : '插件更新已应用')}><Download size={15}/>更新全部</button>
+      </div>
+    </section>
+    <div className="plugin-grid">{items.map((item) => <section className="panel plugin" key={item.id}>
+      <div className="plugin-icon">{item.id === 'paldefender' ? <Shield size={24}/> : <FileCode2 size={24}/>}</div>
+      <div><h2>{item.name}</h2><p>{item.installed ? '已安装' : '尚未安装'}</p></div>
+      <span className={`badge ${item.enabled ? 'success' : ''}`}>{item.enabled ? '已启用' : item.installed ? '已停用' : '未安装'}</span>
+      <dl className="plugin-versions"><div><dt>当前版本</dt><dd>{item.installed ? item.version || '未知' : '未安装'}</dd></div><div><dt>最新版本</dt><dd>{item.latestVersion || (checking ? '检查中…' : item.updateCheckError ? '检查失败' : '未知')}</dd></div><div><dt>更新时间</dt><dd>{item.latestUpdatedAt ? <time dateTime={item.latestUpdatedAt}>{new Date(item.latestUpdatedAt).toLocaleString('zh-CN')}</time> : '未知'}</dd></div></dl>
+      {item.pending ? <div className="plugin-update-status pending" aria-live="polite"><Clock3 size={15}/><span>版本 {item.pendingVersion || '未知'} 已下载，等待重启/下次启动应用</span></div> : item.updateAvailable ? <div className="plugin-update-status available" aria-live="polite"><Download size={15}/><span>发现新版本 {item.latestVersion || ''}</span></div> : !item.installed ? <div className="plugin-update-status"><Package size={15}/><span>可安装最新版本</span></div> : !item.updateCheckError ? <div className="plugin-update-status current"><CheckCircle2 size={15}/><span>已是最新</span></div> : null}
+      {item.updateCheckError && <div className="plugin-update-error" role="status">检查更新失败：{item.updateCheckError}</div>}
+      <div className="plugin-actions">{item.id === 'paldefender' && item.installed && <button type="button" className="ghost" disabled={busy} onClick={() => run('open-paldefender-config', () => API.OpenServerPath(id, 'paldefender'), 'PalDefender 配置已打开')}><FolderOpen size={14}/>配置</button>}<button type="button" className="ghost" disabled={busy || running || !item.installed} onClick={() => run('toggle-plugin', async () => { await API.ToggleExtension(id, item.id, !item.enabled); await refresh(); }, '插件状态已更新')}>{item.enabled ? '停用' : '启用'}</button><button type="button" className="primary" disabled={busy || checking || item.pending} title={item.pending ? '该更新已下载，等待应用' : running ? '服务器运行中，将下载更新并在重启时应用' : '安装或更新插件'} onClick={() => run('update-plugin', async () => { const result = await API.UpdateExtension(id, item.id); await refresh(); return result; }, (result: main.ExtensionUpdateResult) => result.message)}><Download size={15}/>{running ? '下载更新' : '安装/更新'}</button></div>
+    </section>)}</div>
+  </div>;
+}
 
 function ModsView({ id, run }: { id: string; run: Function }) { const [items, setItems] = useState<main.ModEntry[]>([]); const [kind, setKind] = useState('pak'); const refresh = useCallback(() => API.ListMods(id).then(setItems), [id]); useEffect(() => { refresh(); }, [refresh]); async function importMods() { const files = await API.ChooseFiles('选择模组文件'); if (files.length) await run('import-mod', async () => { await API.ImportMods(id, kind, files); await refresh(); }, '模组已导入'); }
   return <section className="panel"><div className="panel-heading"><div><h2>模组管理</h2><p>Lua、Pak、LogicMods 与 DLL 文件</p></div><div className="toolbar"><select value={kind} onChange={(e) => setKind(e.target.value)}><option value="pak">Pak</option><option value="paklogic">Pak LogicMods</option><option value="lua">Lua</option><option value="dll">DLL</option></select><button className="ghost" onClick={() => run('export-client-mods', () => API.ExportClientMods(id), '客户端模组包已生成')}><Package size={15}/>导出客户端包</button><button className="primary" onClick={importMods}><Upload size={15}/>导入</button></div></div><div className="table-wrap"><table><thead><tr><th>名称</th><th>类型</th><th>大小</th><th>状态</th><th/></tr></thead><tbody>{items.map((item) => <tr key={item.path}><td><strong>{item.name}</strong><small>{item.path}</small></td><td><span className="badge">{item.kind.toUpperCase()}</span></td><td>{formatBytes(item.size)}</td><td><span className={`badge ${item.enabled ? 'success' : ''}`}>{item.enabled ? '启用' : '停用'}</span></td><td className="row-actions"><button className="ghost" onClick={() => run('toggle-mod', async () => { await API.ToggleMod(id, item.path, !item.enabled); await refresh(); }, '模组状态已更新')}>{item.enabled ? '停用' : '启用'}</button><button className="icon-button danger-icon" onClick={() => confirm('删除这个模组？') && run('delete-mod', async () => { await API.DeleteMod(id, item.path); await refresh(); }, '模组已删除')}><Trash2 size={15}/></button></td></tr>)}</tbody></table>{!items.length && <Empty icon={Package} text="还没有导入模组"/>}</div></section>; }

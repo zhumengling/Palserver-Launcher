@@ -227,6 +227,9 @@ func (a *App) GetWorldSettingsValues(id string) (map[string]string, error) {
 		return nil, err
 	}
 	values := parseWorldSettingValues(content)
+	if legacyRandomizer, ok := map[string]string{"1": "Region", "2": "All"}[values["RandomizerType"]]; ok {
+		values["RandomizerType"] = legacyRandomizer
+	}
 	if data, readErr := os.ReadFile(filepath.Join(instance.RootPath, "DefaultPalWorldSettings.ini")); readErr == nil {
 		values = mergeMissingWorldSettingDefaults(values, parseWorldSettingValues(string(data)))
 	}
@@ -241,6 +244,9 @@ func (a *App) SaveWorldSettingsValues(id string, updates map[string]string) erro
 	status, _ := serverStatus(instance)
 	if status.Running {
 		return errors.New("stop the server before changing world settings")
+	}
+	if err := validateOfficialWorldSettings(updates); err != nil {
+		return err
 	}
 	path, err := worldSettingsPath(instance)
 	if err != nil {

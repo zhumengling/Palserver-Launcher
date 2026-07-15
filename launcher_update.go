@@ -19,7 +19,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-const LauncherVersion = "0.1.3"
+const LauncherVersion = "0.1.4"
 
 const launcherReleaseEndpoint = "https://api.github.com/repos/zhumengling/Palserver-Launcher/releases/latest"
 

@@ -112,6 +112,11 @@ func serverStatus(instance ServerInstance) (RuntimeStatus, error) {
 			status.FrameTime = number(metrics["serverframetime"])
 			status.Players = int(number(metrics["currentplayernum"]))
 			status.MaxPlayers = int(number(metrics["maxplayernum"]))
+			status.BaseCampNum = int(number(metrics["basecampnum"]))
+			status.WorldDays = int(number(metrics["days"]))
+			if uptime := int64(number(metrics["uptime"])); uptime > 0 {
+				status.Uptime = uptime
+			}
 		}
 	}
 	return status, nil
@@ -136,6 +141,13 @@ func (a *App) GetStatus(id string) (RuntimeStatus, error) {
 		return RuntimeStatus{}, err
 	}
 	return serverStatus(instance)
+}
+
+func prepareServerBeforeLaunch(instance ServerInstance) error {
+	if err := applyPendingExtensionUpdates(instance); err != nil {
+		return fmt.Errorf("apply pending extension updates: %w", err)
+	}
+	return nil
 }
 
 func (a *App) StartServer(id string) error {
@@ -164,6 +176,12 @@ func (a *App) StartServer(id string) error {
 	a.setGuardianSuppressed(id, false)
 	if _, err := os.Stat(instance.Executable); err != nil {
 		return fmt.Errorf("server executable not found: %w", err)
+	}
+	a.extensionStageMu.Lock()
+	prepareErr := prepareServerBeforeLaunch(instance)
+	a.extensionStageMu.Unlock()
+	if prepareErr != nil {
+		return prepareErr
 	}
 	if err := ensureDirectXRuntime(nil); err != nil {
 		return fmt.Errorf("无法启动服务器：%w", err)
@@ -330,6 +348,17 @@ func (a *App) ForceStopServer(id string) error {
 	}
 	a.markExpectedStop(id)
 	a.setGuardianSuppressed(id, true)
+	if _, stopErr := restPost(instance, "/stop", nil); stopErr == nil {
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			current, _ := serverStatus(instance)
+			if !current.Running {
+				a.rebalanceAfterServerExit(instance)
+				return nil
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
 	if err := exec.Command("taskkill", "/PID", strconv.Itoa(status.PID), "/T", "/F").Run(); err != nil {
 		a.clearExpectedStop(id)
 		a.setGuardianSuppressed(id, false)

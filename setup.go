@@ -234,14 +234,13 @@ func (a *App) QuickSetup(name, installRoot string) (ServerInstance, error) {
 		return ServerInstance{}, err
 	}
 	progress("正在安装 PalDefender", 90)
-	if _, err := downloadLatestRelease("Ultimeit/PalDefender", win64Path(instance), func(asset string) bool {
-		return strings.HasSuffix(asset, ".zip") && strings.Contains(asset, "paldefender")
-	}); err != nil {
-		progress("PalDefender 自动安装失败，可稍后在插件页重试", 95)
-	} else if err := validateExtensionInstallation(win64Path(instance), "paldefender"); err != nil {
-		progress("PalDefender 自动安装不完整，可稍后在插件页重试", 95)
-	} else if err := os.MkdirAll(filepath.Join(win64Path(instance), "PalDefender"), 0o755); err != nil {
-		progress("PalDefender 配置目录创建失败，可稍后在插件页重试", 95)
+	installResult, installErr := installLatestExtensionForInstance(instance, "paldefender", releaseDownloadClient(), extensionReleaseSourceFor)
+	if installErr != nil {
+		if installResult.Pending {
+			progress("PalDefender 已下载但安装失败，将在首次启动前重试", 95)
+		} else {
+			progress("PalDefender 自动安装失败，可稍后在插件页重试", 95)
+		}
 	}
 	stored, err := a.store.Upsert(instance)
 	if err != nil {

@@ -5,6 +5,8 @@ frontend/dist/
 frontend/wailsjs/
 frontend/package.json.md5
 tmp/
+.cache/
+tmp_*.png
 
 # Dependencies
 node_modules/

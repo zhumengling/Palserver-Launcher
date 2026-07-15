@@ -206,6 +206,8 @@ type RuntimeStatus struct {
 	FPS           float64 `json:"fps"`
 	FrameTime     float64 `json:"frameTime"`
 	Uptime        int64   `json:"uptime"`
+	BaseCampNum   int     `json:"baseCampNum"`
+	WorldDays     int     `json:"worldDays"`
 	CPU           float64 `json:"cpu"`
 	MemoryMB      float64 `json:"memoryMb"`
 	RESTAvailable bool    `json:"restAvailable"`
@@ -220,15 +222,16 @@ type HostResources struct {
 }
 
 type Player struct {
-	Name        string  `json:"name"`
-	AccountName string  `json:"accountName"`
-	PlayerID    string  `json:"playerId"`
-	UserID      string  `json:"userId"`
-	IP          string  `json:"ip"`
-	Ping        float64 `json:"ping"`
-	LocationX   float64 `json:"locationX"`
-	LocationY   float64 `json:"locationY"`
-	Level       int     `json:"level"`
+	Name          string  `json:"name"`
+	AccountName   string  `json:"accountName"`
+	PlayerID      string  `json:"playerId"`
+	UserID        string  `json:"userId"`
+	IP            string  `json:"ip"`
+	Ping          float64 `json:"ping"`
+	LocationX     float64 `json:"locationX"`
+	LocationY     float64 `json:"locationY"`
+	Level         int     `json:"level"`
+	BuildingCount int     `json:"buildingCount"`
 }
 
 type BackupEntry struct {
@@ -239,12 +242,28 @@ type BackupEntry struct {
 }
 
 type ExtensionStatus struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Installed bool   `json:"installed"`
-	Enabled   bool   `json:"enabled"`
-	Version   string `json:"version"`
-	Path      string `json:"path"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Installed          bool   `json:"installed"`
+	Enabled            bool   `json:"enabled"`
+	Version            string `json:"version"`
+	InstalledAsset     string `json:"-"`
+	InstalledUpdatedAt string `json:"-"`
+	Path               string `json:"path"`
+	LatestVersion      string `json:"latestVersion"`
+	LatestAsset        string `json:"latestAsset"`
+	LatestUpdatedAt    string `json:"latestUpdatedAt"`
+	UpdateAvailable    bool   `json:"updateAvailable"`
+	UpdateCheckError   string `json:"updateCheckError"`
+	Pending            bool   `json:"pending"`
+	PendingVersion     string `json:"pendingVersion"`
+}
+
+type ExtensionUpdateResult struct {
+	ExtensionID string `json:"extensionId"`
+	Version     string `json:"version"`
+	Pending     bool   `json:"pending"`
+	Message     string `json:"message"`
 }
 
 type ModEntry struct {
@@ -256,6 +275,25 @@ type ModEntry struct {
 	Path        string `json:"path"`
 	Enabled     bool   `json:"enabled"`
 	Size        int64  `json:"size"`
+}
+
+type OfficialWorkshopMod struct {
+	Name             string   `json:"name"`
+	PackageName      string   `json:"packageName"`
+	Version          string   `json:"version"`
+	Dependencies     []string `json:"dependencies"`
+	ServerCompatible bool     `json:"serverCompatible"`
+	Enabled          bool     `json:"enabled"`
+	Deployed         bool     `json:"deployed"`
+	Path             string   `json:"path"`
+	Size             int64    `json:"size"`
+}
+
+type PerformanceAdvice struct {
+	Level   string `json:"level"`
+	Title   string `json:"title"`
+	Detail  string `json:"detail"`
+	Setting string `json:"setting"`
 }
 
 type ServerModCatalogEntry struct {

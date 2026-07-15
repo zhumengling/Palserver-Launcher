@@ -16,6 +16,16 @@ import (
 
 var playerActionTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_.:@-]{1,128}$`)
 
+type restHTTPError struct {
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *restHTTPError) Error() string {
+	return fmt.Sprintf("REST %s: %s", e.Status, e.Body)
+}
+
 func restGet(instance ServerInstance, endpoint string) (map[string]any, error) {
 	return restRequest(instance, http.MethodGet, endpoint, nil)
 }
@@ -25,9 +35,26 @@ func restPost(instance ServerInstance, endpoint string, body any) (map[string]an
 }
 
 func restRequest(instance ServerInstance, method, endpoint string, body any) (map[string]any, error) {
+	data, err := restRequestBytes(instance, method, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]any{}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &result); err != nil {
+			return nil, fmt.Errorf("decode REST response: %w", err)
+		}
+	}
+	return result, nil
+}
+
+func restRequestBytes(instance ServerInstance, method, endpoint string, body any) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
-		data, _ := json.Marshal(body)
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
 		reader = bytes.NewReader(data)
 	}
 	req, err := http.NewRequest(method, fmt.Sprintf("http://127.0.0.1:%d/v1/api%s", instance.RESTPort, endpoint), reader)
@@ -44,13 +71,9 @@ func restRequest(instance ServerInstance, method, endpoint string, body any) (ma
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("REST %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return nil, &restHTTPError{StatusCode: resp.StatusCode, Status: resp.Status, Body: strings.TrimSpace(string(data))}
 	}
-	result := map[string]any{}
-	if len(data) > 0 {
-		_ = json.Unmarshal(data, &result)
-	}
-	return result, nil
+	return data, nil
 }
 
 func restInfo(instance ServerInstance) (map[string]any, error) { return restGet(instance, "/info") }
@@ -184,34 +207,7 @@ func (a *App) GetPlayers(id string) ([]Player, error) {
 	if err != nil {
 		return nil, err
 	}
-	result, err := restGet(instance, "/players")
-	if err != nil {
-		return nil, err
-	}
-	raw, _ := json.Marshal(result["players"])
-	var payload []struct {
-		Name, AccountName, PlayerID, UserID, IP, IPAlt string
-		Ping, LocationX, LocationY                     float64
-		Level                                          int
-	}
-	var generic []map[string]any
-	if err := json.Unmarshal(raw, &generic); err != nil {
-		return nil, err
-	}
-	players := make([]Player, 0, len(generic))
-	for _, item := range generic {
-		ip := fmt.Sprint(item["ip"])
-		if ip == "<nil>" || ip == "" {
-			ip = fmt.Sprint(item["iP"])
-		}
-		players = append(players, Player{
-			Name: fmt.Sprint(item["name"]), AccountName: fmt.Sprint(item["accountName"]),
-			PlayerID: fmt.Sprint(item["playerId"]), UserID: fmt.Sprint(item["userId"]), IP: ip,
-			Ping: number(item["ping"]), LocationX: number(item["location_x"]), LocationY: number(item["location_y"]), Level: int(number(item["level"])),
-		})
-	}
-	_ = payload
-	return players, nil
+	return getOfficialPlayers(instance)
 }
 
 func (a *App) PlayerAction(id string, request ActionRequest) (string, error) {

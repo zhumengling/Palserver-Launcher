@@ -906,6 +906,72 @@ func TestPalDefenderConfigButtonsUseSharedActionErrorHandler(t *testing.T) {
 	}
 }
 
+func TestPluginsViewChecksAndAppliesExtensionUpdates(t *testing.T) {
+	appData, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(appData)
+	start := strings.Index(source, "function PluginsView")
+	if start < 0 {
+		t.Fatal("frontend is missing PluginsView")
+	}
+	end := strings.Index(source[start:], "function ModsView")
+	if end < 0 {
+		t.Fatal("frontend is missing the PluginsView boundary")
+	}
+	pluginsView := source[start : start+end]
+	for _, expected := range []string{
+		`API.CheckExtensionUpdates(id)`,
+		`API.UpdateAllExtensions(id)`,
+		`item.updateAvailable`,
+		`item.updateCheckError`,
+		`item.pendingVersion`,
+		`running ? '下载更新' : '安装/更新'`,
+		`disabled={busy || checking}`,
+		`disabled={busy || checking || !hasUpdateCandidates}`,
+		`disabled={busy || running || !item.installed}`,
+		`disabled={busy || checking || item.pending}`,
+	} {
+		if !strings.Contains(pluginsView, expected) {
+			t.Fatalf("PluginsView is missing %q", expected)
+		}
+	}
+	if !strings.Contains(source, `busy={Boolean(busy)} run={run}`) {
+		t.Fatal("App does not pass its busy state to PluginsView")
+	}
+	if strings.Contains(pluginsView, `className="primary" disabled={running}`) {
+		t.Fatal("PluginsView still disables extension updates while the server is running")
+	}
+}
+
+func TestPluginsViewIgnoresStaleRefreshResults(t *testing.T) {
+	appData, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(appData)
+	start := strings.Index(source, "function PluginsView")
+	end := strings.Index(source[start:], "function ModsView")
+	if start < 0 || end < 0 {
+		t.Fatal("frontend PluginsView source body was not found")
+	}
+	pluginsView := source[start : start+end]
+	for _, expected := range []string{
+		`const refreshGeneration = useRef(0);`,
+		`const generation = ++refreshGeneration.current;`,
+		`if (generation === refreshGeneration.current) action();`,
+		`return () => { refreshGeneration.current++; };`,
+	} {
+		if !strings.Contains(pluginsView, expected) {
+			t.Fatalf("PluginsView stale-refresh protection is missing %q", expected)
+		}
+	}
+	if guarded := strings.Count(pluginsView, "commitRefresh(() =>"); guarded < 5 {
+		t.Fatalf("PluginsView guards only %d refresh state commits, want at least 5", guarded)
+	}
+}
+
 func TestGuardianUsesFailureThresholdAndRestartBudget(t *testing.T) {
 	if guardianFailureReached(2, 3) {
 		t.Fatal("guardian restarted before reaching failure threshold")
