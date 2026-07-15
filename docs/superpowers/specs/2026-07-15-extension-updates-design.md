@@ -38,10 +38,10 @@
 - 是否已有暂存更新、暂存版本；
 - 当前实际路径，兼容 UE4SS 新旧布局。
 
-暂存目录位于本机应用数据目录：
+为保证替换和回滚可以使用同卷原子重命名，暂存目录位于每个服务器的 Win64 目录：
 
 ```text
-%LOCALAPPDATA%/palserver-launcher/extensions/<server-id>/<extension-id>/pending/
+Pal/Binaries/Win64/.palserver-launcher/staged/<extension-id>/pending/
 ```
 
 其中保存解压后的 payload 和 `manifest.json`。清单包含扩展 ID、版本、资产名、资产更新时间、下载时间和目标布局版本。
@@ -49,14 +49,14 @@
 备份目录位于：
 
 ```text
-%LOCALAPPDATA%/palserver-launcher/extension-backups/<server-id>/<extension-id>/<timestamp>/
+Pal/Binaries/Win64/.palserver-launcher/backups/<extension-id>/<timestamp>/
 ```
 
 ## 更新流程
 
 1. 插件页面先读取本地状态，再并行请求两个远端版本源。
 2. 用户点击更新后，下载资产到与暂存目录相同的磁盘并安全解压。
-3. 校验暂存内容：PalDefender 必须含 `PalDefender.dll` 与 `d3d9.dll`；UE4SS 必须含根目录代理 DLL 和 `ue4ss/UE4SS.dll`。
+3. 校验下载大小、GitHub SHA-256（若提供）和暂存内容。PalDefender ZIP 条目必须精确等于根目录 `PalDefender.dll` 与 `d3d9.dll`；UE4SS 必须含根目录代理 DLL 和 `ue4ss/UE4SS.dll`。
 4. 若服务器正在运行，保留暂存内容并显示“等待服务器重启后应用”。
 5. 若服务器已停止，立即调用相同的应用流程。
 6. `StartServer` 在启动游戏进程之前应用所有 pending 更新；失败则阻止启动并返回明确错误。
@@ -72,9 +72,9 @@
 ## UE4SS 迁移
 
 - 使用 experimental 包的新布局：根目录只保留代理 DLL，核心、设置和内置 Mods 位于 `Win64/ue4ss`。
-- 将旧 `Win64/Mods` 中的自定义模组和启用列表合并到新 `Win64/ue4ss/Mods`。
+- 将旧 `Win64/Mods` 中的非内置自定义模组和启用状态合并到新 `Win64/ue4ss/Mods`；新版包自带的内置模组使用新版文件，不能被旧脚本覆盖。
 - 以新包设置文件为基线，只迁移仍存在的用户键；强制采用 headless 安全值：`ConsoleEnabled=0`、`GuiConsoleEnabled=0`、`GuiConsoleVisible=0`、`bUseUObjectArrayCache=false`。
-- 保持 UE4SS 更新前的启用/停用状态。
+- 以根目录代理 `dwmapi.dll` 的启用/停用状态表示 UE4SS 状态；仅改名核心 DLL 会让代理找不到核心并退出进程，因此不能作为停用方式。
 - 成功后移除已备份的旧根目录 `UE4SS.dll`、旧设置文件和旧 Mods 目录，避免新旧运行时混用。
 
 ## 界面行为
@@ -87,7 +87,7 @@
 ## 错误处理
 
 - GitHub 不可用不会改变本地插件状态。
-- 下载或解压失败时删除不完整暂存目录。
+- 下载大小或 SHA-256 不匹配、下载或解压失败时删除不完整暂存目录。
 - 资产结构不符合预期时拒绝暂存。
 - 应用失败时恢复备份；若回滚也失败，错误同时包含原始失败与回滚失败，并保留备份目录供人工恢复。
 - 不在正在运行的 PalServer 目录中直接覆盖 DLL。
