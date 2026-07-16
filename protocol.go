@@ -223,6 +223,9 @@ func (a *App) PlayerAction(id string, request ActionRequest) (string, error) {
 		_, err = restPost(instance, "/"+request.Action, map[string]any{"userid": request.UserID, "message": "Managed by Palserver Launcher"})
 		return "OK", err
 	}
+	if request.Action == "pal" && request.Pal != nil && request.Pal.Custom {
+		return grantCustomPal(instance, request)
+	}
 	commands, err := buildPlayerActionCommands(request)
 	if err != nil {
 		return "", err
@@ -288,9 +291,16 @@ func buildPlayerActionCommands(request ActionRequest) ([]string, error) {
 		if err := requireValue("palId", request.Value); err != nil {
 			return nil, err
 		}
+		if amount > maxPalGrantCount {
+			return nil, fmt.Errorf("Pal grant count must be between 1 and %d", maxPalGrantCount)
+		}
+		level, err := palGrantLevel(request)
+		if err != nil {
+			return nil, err
+		}
 		commands := make([]string, amount)
 		for index := range commands {
-			commands[index] = fmt.Sprintf("givepal %s %s", request.UserID, request.Value)
+			commands[index] = fmt.Sprintf("givepal %s %s %d", request.UserID, request.Value, level)
 		}
 		return commands, nil
 	default:

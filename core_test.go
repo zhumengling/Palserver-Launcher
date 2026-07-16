@@ -99,6 +99,14 @@ func TestBuildPlayerActionCommandsSupportsOnePointZeroRewards(t *testing.T) {
 			request: ActionRequest{Action: "egg", UserID: "steam_76561190000000000", Value: "PalEgg_Dragon_05", Extra: "GoldenHorse", Amount: 50},
 			want:    []string{"giveegg steam_76561190000000000 PalEgg_Dragon_05 GoldenHorse 50"},
 		},
+		{
+			name:    "pal with selected level and count",
+			request: ActionRequest{Action: "pal", UserID: "steam_76561190000000000", Value: "WorldTreeDragon", Amount: 2, Pal: &PalGrantOptions{Level: 65}},
+			want: []string{
+				"givepal steam_76561190000000000 WorldTreeDragon 65",
+				"givepal steam_76561190000000000 WorldTreeDragon 65",
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

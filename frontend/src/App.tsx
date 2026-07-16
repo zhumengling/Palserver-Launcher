@@ -51,7 +51,7 @@ function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupProgress, setSetupProgress] = useState({ message: '准备开始', percent: 0 });
-  const [launcherVersion, setLauncherVersion] = useState('v0.1.4');
+  const [launcherVersion, setLauncherVersion] = useState('v0.1.5');
   const [launcherUpdate, setLauncherUpdate] = useState<main.LauncherUpdateInfo | null>(null);
   const [launcherUpdateOpen, setLauncherUpdateOpen] = useState(false);
   const [launcherUpdateBusy, setLauncherUpdateBusy] = useState(false);
@@ -316,12 +316,33 @@ function PlayersView({ id, run }: { id: string; run: Function }) {
 }
 
 function PlayerDialog({ player, onClose, onAction }: { player: main.Player; onClose: () => void; onAction: (r: main.ActionRequest) => void }) {
-  const [kind, setKind] = useState('item'); const [value, setValue] = useState('Wood'); const [extra, setExtra] = useState(''); const [amount, setAmount] = useState(1); const [catalogTarget, setCatalogTarget] = useState<'value' | 'extra' | null>(null);
-  const send = (action: string, val = value, count = amount) => onAction(new main.ActionRequest({ action, userId: player.userId, value: val, amount: count, extra }));
+  const [kind, setKind] = useState('item');
+  const [value, setValue] = useState('Wood');
+  const [extra, setExtra] = useState('');
+  const [amount, setAmount] = useState(1);
+  const [catalogTarget, setCatalogTarget] = useState<'value' | 'extra' | 'activeSkills' | 'passives' | null>(null);
+  const [palLevel, setPalLevel] = useState(1);
+  const [palCustom, setPalCustom] = useState(false);
+  const [palGender, setPalGender] = useState('Random');
+  const [palNickname, setPalNickname] = useState('');
+  const [palShiny, setPalShiny] = useState(false);
+  const [partnerSkillLevel, setPartnerSkillLevel] = useState(1);
+  const [activeSkills, setActiveSkills] = useState<string[]>([]);
+  const [passives, setPassives] = useState<string[]>([]);
+  const [abilityNames, setAbilityNames] = useState<Record<string, string>>({});
+  const [ivs, setIVs] = useState({ health: 0, attackMelee: 0, attackShot: 0, defense: 0 });
+  const [palSouls, setPalSouls] = useState({ health: 0, attack: 0, defense: 0, craftSpeed: 0 });
+  const send = (action: string, val = value, count = amount) => onAction(new main.ActionRequest({
+    action, userId: player.userId, value: val, amount: count, extra,
+    pal: action === 'pal' ? {
+      custom: palCustom, level: palLevel, gender: palGender, nickname: palNickname, shiny: palShiny,
+      partnerSkillLevel, activeSkills, passives, ivs, palSouls,
+    } : undefined,
+  }));
   const changeKind = (next: string) => {
-    setKind(next); setAmount(1); setExtra('');
+    setKind(next); setAmount(1); setExtra(''); setCatalogTarget(null);
     if (next === 'item') setValue('Wood');
-    else if (next === 'pal') setValue('SheepBall');
+    else if (next === 'pal') { setValue('SheepBall'); setPalLevel(1); setPalCustom(false); setActiveSkills([]); setPassives([]); setAbilityNames({}); }
     else if (next === 'egg') { setValue('PalEgg_Normal_01'); setExtra('SheepBall'); }
     else if (next === 'learntech') setValue('all');
     else setValue('');
@@ -329,13 +350,39 @@ function PlayerDialog({ player, onClose, onAction }: { player: main.Player; onCl
   const valueUsesCatalog = ['item', 'pal', 'egg'].includes(kind);
   const valueEnabled = valueUsesCatalog || kind === 'learntech';
   const valueLabel = kind === 'egg' ? '蛋类型' : kind === 'learntech' ? '科技 ID（all = 全部）' : kind === 'pal' ? '帕鲁 ID / 名称' : '道具 ID / 名称';
-  const amountLabel = kind === 'egg' ? '帕鲁等级' : '数量 / 点数';
+  const amountLabel = kind === 'egg' ? '帕鲁等级' : kind === 'pal' ? '给予数量' : '数量 / 点数';
+  const toggleLimited = (values: string[], setter: (next: string[]) => void, id: string, maximum: number) => {
+    if (values.includes(id)) setter(values.filter((value) => value !== id));
+    else if (values.length < maximum) setter([...values, id]);
+  };
+  const setIV = (key: keyof typeof ivs, next: number) => setIVs((current) => ({ ...current, [key]: next }));
+  const setSoul = (key: keyof typeof palSouls, next: number) => setPalSouls((current) => ({ ...current, [key]: next }));
+  const catalogKind = catalogTarget === 'activeSkills' ? 'skill' : catalogTarget === 'passives' ? 'passive' : catalogTarget === 'extra' || kind === 'pal' ? 'pal' : 'item';
+  const catalogSelectedMany = catalogTarget === 'activeSkills' ? activeSkills : catalogTarget === 'passives' ? passives : [];
+  const catalogMaximum = catalogTarget === 'activeSkills' ? 3 : catalogTarget === 'passives' ? 4 : undefined;
+  const chooseCatalogEntry = (entry: { id: string; nameZh?: string; name?: string }) => {
+    const id = entry.id;
+    if (catalogTarget === 'activeSkills') {
+      toggleLimited(activeSkills, setActiveSkills, id, 3);
+      setAbilityNames((current) => ({ ...current, [id]: entry.nameZh || entry.name || id }));
+    } else if (catalogTarget === 'passives') {
+      toggleLimited(passives, setPassives, id, 4);
+      setAbilityNames((current) => ({ ...current, [id]: entry.nameZh || entry.name || id }));
+    } else if (catalogTarget === 'extra') setExtra(id);
+    else { setValue(id); if (kind === 'pal') { setActiveSkills([]); setAbilityNames({}); } }
+  };
   return <><div className="modal-backdrop"><div className="modal wide"><div className="modal-header"><div><h2>{player.name}</h2><p>{player.userId}</p></div><button onClick={onClose}><X size={18}/></button></div>
     <div className="quick-actions"><button onClick={() => send('setadmin')}><Shield size={16}/>设为管理员</button><button onClick={() => send('kick')}><Zap size={16}/>踢出</button><button className="danger-soft" onClick={() => send('ban')}><Ban size={16}/>封禁</button><button className="danger-soft" onClick={() => send('ipban')}><Globe2 size={16}/>封禁 IP</button></div>
-    <div className={`form-grid reward-grid ${kind === 'egg' ? 'has-extra' : ''}`}><label><span>给予类型</span><select value={kind} onChange={(e) => changeKind(e.target.value)}><option value="item">道具</option><option value="pal">帕鲁</option><option value="egg">帕鲁蛋</option><option value="exp">经验</option><option value="stats">属性点</option><option value="relic">捕获力</option><option value="tech">科技点</option><option value="bosstech">古代科技点</option><option value="learntech">解锁科技</option></select></label><label><span>{valueLabel}</span><div className="input-action"><input disabled={!valueEnabled} value={value} placeholder={valueEnabled ? '输入内部 ID' : '此类型无需填写 ID'} onChange={(e) => setValue(e.target.value)}/>{valueUsesCatalog && <button type="button" title="打开完整目录" onClick={() => setCatalogTarget('value')}><Search size={15}/></button>}</div></label>{kind === 'egg' && <label><span>蛋内帕鲁</span><div className="input-action"><input value={extra} onChange={(e) => setExtra(e.target.value)}/><button type="button" title="选择帕鲁" onClick={() => setCatalogTarget('extra')}><Search size={15}/></button></div></label>}<label><span>{amountLabel}</span><input type="number" min="1" max={kind === 'egg' ? 100 : undefined} value={amount} disabled={kind === 'learntech'} onChange={(e) => setAmount(Number(e.target.value))}/></label></div>
-    <div className="reward-hint">道具与帕鲁目录已包含 1.0 新内容；属性点、帕鲁蛋和科技解锁由 PalDefender RCON 执行。</div>
+    <div className={`form-grid reward-grid ${kind === 'egg' ? 'has-extra' : ''} ${kind === 'pal' ? 'has-pal-level' : ''}`}><label><span>给予类型</span><select value={kind} onChange={(e) => changeKind(e.target.value)}><option value="item">道具</option><option value="pal">帕鲁</option><option value="egg">帕鲁蛋</option><option value="exp">经验</option><option value="stats">属性点</option><option value="relic">捕获力</option><option value="tech">科技点</option><option value="bosstech">古代科技点</option><option value="learntech">解锁科技</option></select></label><label><span>{valueLabel}</span><div className="input-action"><input disabled={!valueEnabled} value={value} placeholder={valueEnabled ? '输入内部 ID' : '此类型无需填写 ID'} onChange={(e) => setValue(e.target.value)}/>{valueUsesCatalog && <button type="button" title="打开完整目录" onClick={() => setCatalogTarget('value')}><Search size={15}/></button>}</div></label>{kind === 'egg' && <label><span>蛋内帕鲁</span><div className="input-action"><input value={extra} onChange={(e) => setExtra(e.target.value)}/><button type="button" title="选择帕鲁" onClick={() => setCatalogTarget('extra')}><Search size={15}/></button></div></label>}<label><span>{amountLabel}</span><input type="number" min="1" max={kind === 'egg' ? 100 : kind === 'pal' ? 20 : undefined} value={amount} disabled={kind === 'learntech'} onChange={(e) => setAmount(Number(e.target.value))}/></label>{kind === 'pal' && <label><span>帕鲁等级</span><input type="number" min="1" max="255" value={palLevel} onChange={(e) => setPalLevel(Number(e.target.value))}/></label>}</div>
+    {kind === 'pal' && <div className="pal-custom-section">
+      <label className="pal-custom-toggle"><input type="checkbox" checked={palCustom} onChange={(event) => setPalCustom(event.target.checked)}/><span><strong>高级自定义帕鲁</strong><small>启用后使用 PalDefender PalTemplate，可指定性别、技能、被动、个体值和魂强化。</small></span></label>
+      {palCustom && <><div className="pal-custom-grid"><label><span>昵称（可选）</span><input maxLength={64} value={palNickname} onChange={(event) => setPalNickname(event.target.value)}/></label><label><span>性别</span><select value={palGender} onChange={(event) => setPalGender(event.target.value)}><option value="Random">随机</option><option value="Male">雄性</option><option value="Female">雌性</option><option value="None">无性别</option></select></label><label><span>伙伴技能等级</span><input type="number" min="1" max="255" value={partnerSkillLevel} onChange={(event) => setPartnerSkillLevel(Number(event.target.value))}/></label><label className="pal-check"><input type="checkbox" checked={palShiny} onChange={(event) => setPalShiny(event.target.checked)}/><span>闪光帕鲁</span></label></div>
+      <div className="pal-ability-grid"><div><div className="pal-ability-heading"><span><strong>主动技能</strong><small>最多 3 个，目录会优先显示该帕鲁可学习的技能。</small></span><button className="ghost" type="button" onClick={() => setCatalogTarget('activeSkills')}><Search size={14}/>选择技能</button></div><div className="pal-chips">{activeSkills.map((id) => <button type="button" key={id} title={id} onClick={() => toggleLimited(activeSkills, setActiveSkills, id, 3)}>{abilityNames[id] || id}<X size={12}/></button>)}{!activeSkills.length && <span>未指定，使用插件默认技能</span>}</div></div><div><div className="pal-ability-heading"><span><strong>被动词条</strong><small>最多 4 个，仅列出当前已实装词条。</small></span><button className="ghost" type="button" onClick={() => setCatalogTarget('passives')}><Search size={14}/>选择词条</button></div><div className="pal-chips">{passives.map((id) => <button type="button" key={id} title={id} onClick={() => toggleLimited(passives, setPassives, id, 4)}>{abilityNames[id] || id}<X size={12}/></button>)}{!passives.length && <span>未指定被动词条</span>}</div></div></div>
+      <div className="pal-stats"><div><h3>个体值 IV（0–255）</h3><div>{([['health', '生命'], ['attackMelee', '近战攻击'], ['attackShot', '远程攻击'], ['defense', '防御']] as const).map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="255" value={ivs[key]} onChange={(event) => setIV(key, Number(event.target.value))}/></label>)}</div></div><div><h3>帕鲁魂强化（0–255）</h3><div>{([['health', '生命'], ['attack', '攻击'], ['defense', '防御'], ['craftSpeed', '制作速度']] as const).map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="255" value={palSouls[key]} onChange={(event) => setSoul(key, Number(event.target.value))}/></label>)}</div></div></div></>}
+    </div>}
+    <div className="reward-hint">道具和帕鲁均使用中文目录并保留内部 ID 搜索；普通帕鲁可直接指定等级，高级自定义由 PalDefender PalTemplate 执行，并受服务器导入规则限制。</div>
     <div className="modal-actions"><button className="ghost" onClick={onClose}>关闭</button><button className="primary" onClick={() => send(kind)}><Package size={15}/>执行给予</button></div></div></div>
-    {catalogTarget && <Suspense fallback={<div className="busy-layer"><RefreshCw className="spin" size={20}/><span>正在加载游戏数据...</span></div>}><GameCatalog kind={catalogTarget === 'extra' || kind === 'pal' ? 'pal' : 'item'} filterPrefix={kind === 'egg' && catalogTarget === 'value' ? 'PalEgg_' : ''} title={kind === 'egg' && catalogTarget === 'value' ? '选择帕鲁蛋类型' : undefined} selected={catalogTarget === 'extra' ? extra : value} onClose={() => setCatalogTarget(null)} onSelect={catalogTarget === 'extra' ? setExtra : setValue}/></Suspense>}</>;
+    {catalogTarget && <Suspense fallback={<div className="busy-layer"><RefreshCw className="spin" size={20}/><span>正在加载游戏数据...</span></div>}><GameCatalog kind={catalogKind} filterPrefix={kind === 'egg' && catalogTarget === 'value' ? 'PalEgg_' : ''} title={kind === 'egg' && catalogTarget === 'value' ? '选择帕鲁蛋类型' : undefined} selected={catalogTarget === 'extra' ? extra : value} selectedMany={catalogSelectedMany} multiSelect={catalogTarget === 'activeSkills' || catalogTarget === 'passives'} maxSelected={catalogMaximum} recommendedPalId={value} onClose={() => setCatalogTarget(null)} onSelect={chooseCatalogEntry}/></Suspense>}</>;
 }
 
 function SettingsView({ id, running, run }: { id: string; running: boolean; run: Function }) { const [content, setContent] = useState(''); useEffect(() => { API.ReadWorldSettings(id).then(setContent); }, [id]); return <section className="panel"><div className="panel-heading"><div><h2>PalWorldSettings.ini</h2><p>结构化设置将在后续版本继续扩展，当前可完整编辑官方配置</p></div><button className="primary" disabled={running} onClick={() => run('save-settings', () => API.WriteWorldSettings(id, content), '设置已保存')}><Save size={15}/>保存</button></div>{running && <div className="inline-warning">停止服务器后才能保存设置。</div>}<textarea className="code-editor" spellCheck={false} value={content} onChange={(e) => setContent(e.target.value)}/></section>; }

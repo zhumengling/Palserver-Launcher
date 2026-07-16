@@ -1,9 +1,12 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
+    "catalog:update": "node scripts/update-game-catalog.mjs && npm run catalog:verify",
+    "catalog:verify": "tsx --test tests/gameCatalog.test.ts && go test -count=1 -run TestGameCatalogMatchesPalworldOnePointZeroServerBuild ..",
+    "test": "tsx --test tests/*.test.ts",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview"
@@ -17,6 +20,7 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "tsx": "^4.23.1",
     "typescript": "^5.6.3",
     "vite": "^7.0.0"
   }

@@ -323,10 +323,38 @@ type DiagnosticResult struct {
 	Detail string `json:"detail"`
 }
 
+type PalIVs struct {
+	Health      int `json:"health"`
+	AttackMelee int `json:"attackMelee"`
+	AttackShot  int `json:"attackShot"`
+	Defense     int `json:"defense"`
+}
+
+type PalSoulBonuses struct {
+	Health     int `json:"health"`
+	Attack     int `json:"attack"`
+	Defense    int `json:"defense"`
+	CraftSpeed int `json:"craftSpeed"`
+}
+
+type PalGrantOptions struct {
+	Custom            bool           `json:"custom"`
+	Level             int            `json:"level"`
+	Gender            string         `json:"gender"`
+	Nickname          string         `json:"nickname"`
+	Shiny             bool           `json:"shiny"`
+	PartnerSkillLevel int            `json:"partnerSkillLevel"`
+	ActiveSkills      []string       `json:"activeSkills"`
+	Passives          []string       `json:"passives"`
+	IVs               PalIVs         `json:"ivs"`
+	PalSouls          PalSoulBonuses `json:"palSouls"`
+}
+
 type ActionRequest struct {
-	Action string `json:"action"`
-	UserID string `json:"userId"`
-	Value  string `json:"value"`
-	Amount int    `json:"amount"`
-	Extra  string `json:"extra"`
+	Action string           `json:"action"`
+	UserID string           `json:"userId"`
+	Value  string           `json:"value"`
+	Amount int              `json:"amount"`
+	Extra  string           `json:"extra"`
+	Pal    *PalGrantOptions `json:"pal"`
 }
