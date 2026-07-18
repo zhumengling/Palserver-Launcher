@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -216,8 +217,13 @@ func TestQuickSetupUsesUnifiedPalDefenderPipelineBeforeStoreUpsert(t *testing.T)
 		t.Fatal("QuickSetup source body was not found")
 	}
 	body := source[start : start+end]
+	serverInstall := strings.Index(body, "a.installOrUpdate(instance")
+	validateInstall := strings.Index(body, "validateInstalledServerExecutable(instance)")
 	install := strings.Index(body, `installLatestExtensionForInstance(instance, "paldefender"`)
 	upsert := strings.Index(body, "a.store.Upsert(instance)")
+	if serverInstall < 0 || validateInstall < 0 || validateInstall <= serverInstall || validateInstall >= upsert {
+		t.Fatalf("QuickSetup server validation order is invalid: install=%d validate=%d upsert=%d", serverInstall, validateInstall, upsert)
+	}
 	if install < 0 || upsert < 0 || install >= upsert {
 		t.Fatalf("QuickSetup unified install/upsert order is invalid: install=%d upsert=%d", install, upsert)
 	}
@@ -761,6 +767,42 @@ func TestApplyPendingExtensionRollsBackAfterCommitFailure(t *testing.T) {
 	backups, err := os.ReadDir(filepath.Join(base, ".palserver-launcher", "backups", "ue4ss"))
 	if err != nil || len(backups) == 0 {
 		t.Fatalf("failed update did not retain backup: %v, entries=%d", err, len(backups))
+	}
+}
+
+func TestRenameExtensionStagePathRetriesTransientFailures(t *testing.T) {
+	attempts := 0
+	delays := make([]time.Duration, 0)
+	err := renameExtensionStagePathWith(func(source, destination string) error {
+		attempts++
+		if source != "incoming" || destination != "pending" {
+			t.Fatalf("rename paths = %q -> %q", source, destination)
+		}
+		if attempts < 4 {
+			return os.ErrPermission
+		}
+		return nil
+	}, func(delay time.Duration) {
+		delays = append(delays, delay)
+	}, "incoming", "pending")
+	if err != nil || attempts != 4 {
+		t.Fatalf("retry result attempts=%d err=%v", attempts, err)
+	}
+	want := []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
+	if !reflect.DeepEqual(delays, want) {
+		t.Fatalf("retry delays = %v, want %v", delays, want)
+	}
+}
+
+func TestRenameExtensionStagePathReturnsLastFailure(t *testing.T) {
+	attempts := 0
+	want := errors.New("still locked")
+	err := renameExtensionStagePathWith(func(string, string) error {
+		attempts++
+		return want
+	}, func(time.Duration) {}, "incoming", "pending")
+	if !errors.Is(err, want) || attempts != 8 {
+		t.Fatalf("retry result attempts=%d err=%v", attempts, err)
 	}
 }
 

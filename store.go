@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,41 +14,292 @@ import (
 )
 
 type Store struct {
-	mu     sync.RWMutex
-	path   string
-	config AppConfig
+	mu       sync.RWMutex
+	path     string
+	config   AppConfig
+	warnings []string
 }
 
 func NewStore() (*Store, error) {
-	base := os.Getenv("LOCALAPPDATA")
-	if base == "" {
-		return nil, errors.New("LOCALAPPDATA is not available")
-	}
-	dir := filepath.Join(base, "palserver-launcher")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := appDataDir()
+	if err != nil {
 		return nil, err
 	}
 	s := &Store{path: filepath.Join(dir, "config.json")}
 	s.config.Language = "zh-CN"
-	if data, err := os.ReadFile(s.path); err == nil {
-		if err := json.Unmarshal(data, &s.config); err != nil {
-			return nil, err
-		}
-		migrated := false
-		for index := range s.config.Instances {
-			updated := withDefaults(s.config.Instances[index])
-			if updated.ProcessPriority != s.config.Instances[index].ProcessPriority || updated.CPUAffinityMode != s.config.Instances[index].CPUAffinityMode || updated.WorkerThreads != s.config.Instances[index].WorkerThreads {
-				migrated = true
+	if err := s.load(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func decodeAppConfig(data []byte) (AppConfig, error) {
+	var config AppConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return AppConfig{}, err
+	}
+	if strings.TrimSpace(config.Language) == "" {
+		config.Language = "zh-CN"
+	}
+	config.StartupWarnings = nil
+	return config, nil
+}
+
+func hydrateConfigSecrets(config *AppConfig) []string {
+	warnings := make([]string, 0)
+	for index := range config.Instances {
+		instance := &config.Instances[index]
+		if instance.EncryptedAdminPassword != "" {
+			value, err := unprotectSecret(instance.EncryptedAdminPassword)
+			if err != nil {
+				instance.AdminPassword = ""
+				warnings = append(warnings, fmt.Sprintf("服务器“%s”的管理员密码无法解密，请重新输入并保存", instance.Name))
+			} else {
+				instance.AdminPassword = value
 			}
-			s.config.Instances[index] = updated
 		}
-		if migrated {
-			if err := s.saveLocked(); err != nil {
-				return nil, err
+		if instance.EncryptedServerPassword != "" {
+			value, err := unprotectSecret(instance.EncryptedServerPassword)
+			if err != nil {
+				instance.ServerPassword = ""
+				warnings = append(warnings, fmt.Sprintf("服务器“%s”的入服密码无法解密，请重新输入并保存", instance.Name))
+			} else {
+				instance.ServerPassword = value
 			}
 		}
 	}
-	return s, nil
+	return warnings
+}
+
+func configForPersistence(config AppConfig) (AppConfig, error) {
+	config.StartupWarnings = nil
+	config.Instances = append([]ServerInstance(nil), config.Instances...)
+	for index := range config.Instances {
+		instance := &config.Instances[index]
+		if instance.AdminPassword != "" {
+			encrypted, err := protectSecret(instance.AdminPassword)
+			if err != nil {
+				return AppConfig{}, fmt.Errorf("encrypt administrator password for %s: %w", instance.Name, err)
+			}
+			instance.EncryptedAdminPassword = encrypted
+		}
+		if instance.ServerPassword != "" {
+			encrypted, err := protectSecret(instance.ServerPassword)
+			if err != nil {
+				return AppConfig{}, fmt.Errorf("encrypt server password for %s: %w", instance.Name, err)
+			}
+			instance.EncryptedServerPassword = encrypted
+		}
+		instance.AdminPassword = ""
+		instance.ServerPassword = ""
+	}
+	return config, nil
+}
+
+func normalizeStoredConfig(config *AppConfig) bool {
+	migrated := false
+	if strings.TrimSpace(config.Language) == "" {
+		config.Language = "zh-CN"
+		migrated = true
+	}
+	config.StartupWarnings = nil
+	for index := range config.Instances {
+		if config.Instances[index].AdminPassword != "" && config.Instances[index].EncryptedAdminPassword == "" || config.Instances[index].ServerPassword != "" && config.Instances[index].EncryptedServerPassword == "" {
+			migrated = true
+		}
+		updated := withDefaults(config.Instances[index])
+		if updated != config.Instances[index] {
+			migrated = true
+		}
+		config.Instances[index] = updated
+	}
+	return migrated
+}
+
+func configBackupPath(path string) string { return path + ".bak" }
+
+func quarantineConfigFile(path string, now time.Time) (string, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	candidate := fmt.Sprintf("%s.corrupt-%s", path, now.Format("20060102-150405"))
+	for suffix := 2; ; suffix++ {
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return "", err
+		}
+		candidate = fmt.Sprintf("%s.corrupt-%s-%d", path, now.Format("20060102-150405"), suffix)
+	}
+	if err := os.Rename(path, candidate); err != nil {
+		return "", err
+	}
+	return candidate, nil
+}
+
+func writeAppConfig(path string, config AppConfig) error {
+	config, err := configForPersistence(config)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	return nil
+}
+
+func writeConfigBackup(path string, data []byte) error {
+	config, err := decodeAppConfig(data)
+	if err != nil {
+		return nil
+	}
+	config, err = configForPersistence(config)
+	if err != nil {
+		return err
+	}
+	data, err = json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	backup := configBackupPath(path)
+	temporary := backup + ".tmp"
+	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, backup); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	return nil
+}
+
+func (s *Store) recoverConfig(mainErr error) error {
+	backup := configBackupPath(s.path)
+	backupData, backupReadErr := os.ReadFile(backup)
+	if backupReadErr == nil {
+		if recovered, decodeErr := decodeAppConfig(backupData); decodeErr == nil {
+			quarantined, err := quarantineConfigFile(s.path, time.Now())
+			if err != nil {
+				return fmt.Errorf("quarantine corrupt config: %w", err)
+			}
+			normalizeStoredConfig(&recovered)
+			s.warnings = append(s.warnings, hydrateConfigSecrets(&recovered)...)
+			s.config = recovered
+			if err := writeAppConfig(s.path, s.config); err != nil {
+				return fmt.Errorf("restore config backup: %w", err)
+			}
+			message := "启动器配置损坏，已自动恢复上一份备份"
+			if quarantined != "" {
+				message += "；损坏文件已保留为 " + filepath.Base(quarantined)
+			}
+			s.warnings = append(s.warnings, message)
+			return nil
+		}
+	}
+
+	now := time.Now()
+	quarantinedMain, quarantineMainErr := quarantineConfigFile(s.path, now)
+	if quarantineMainErr != nil {
+		return fmt.Errorf("quarantine corrupt config: %w", quarantineMainErr)
+	}
+	quarantinedBackup, quarantineBackupErr := quarantineConfigFile(backup, now)
+	if quarantineBackupErr != nil {
+		return fmt.Errorf("quarantine corrupt config backup: %w", quarantineBackupErr)
+	}
+	s.config = AppConfig{Language: "zh-CN"}
+	if err := writeAppConfig(s.path, s.config); err != nil {
+		return err
+	}
+	message := "启动器配置无法读取，已使用空白配置启动；原文件均已保留"
+	if mainErr != nil {
+		message += "（" + mainErr.Error() + "）"
+	}
+	if quarantinedMain != "" || quarantinedBackup != "" {
+		names := make([]string, 0, 2)
+		if quarantinedMain != "" {
+			names = append(names, filepath.Base(quarantinedMain))
+		}
+		if quarantinedBackup != "" {
+			names = append(names, filepath.Base(quarantinedBackup))
+		}
+		message += "：" + strings.Join(names, "、")
+	}
+	s.warnings = append(s.warnings, message)
+	return nil
+}
+
+func (s *Store) load() error {
+	data, err := os.ReadFile(s.path)
+	if os.IsNotExist(err) {
+		backupData, backupErr := os.ReadFile(configBackupPath(s.path))
+		if os.IsNotExist(backupErr) {
+			return nil
+		}
+		if backupErr != nil {
+			return backupErr
+		}
+		recovered, decodeErr := decodeAppConfig(backupData)
+		if decodeErr != nil {
+			return s.recoverConfig(decodeErr)
+		}
+		normalizeStoredConfig(&recovered)
+		s.warnings = append(s.warnings, hydrateConfigSecrets(&recovered)...)
+		s.config = recovered
+		if err := writeAppConfig(s.path, s.config); err != nil {
+			return err
+		}
+		s.warnings = append(s.warnings, "启动器主配置缺失，已从上一份备份自动恢复")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	config, decodeErr := decodeAppConfig(data)
+	if decodeErr != nil {
+		return s.recoverConfig(decodeErr)
+	}
+	migrated := normalizeStoredConfig(&config)
+	s.warnings = append(s.warnings, hydrateConfigSecrets(&config)...)
+	s.config = config
+	if migrated {
+		return s.saveLocked()
+	}
+	return nil
+}
+
+func (s *Store) Warnings() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.warnings...)
+}
+
+func (s *Store) AddWarning(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.warnings {
+		if existing == message {
+			return
+		}
+	}
+	s.warnings = append(s.warnings, message)
 }
 
 func (s *Store) Snapshot() AppConfig {
@@ -60,15 +312,14 @@ func (s *Store) Snapshot() AppConfig {
 }
 
 func (s *Store) saveLocked() error {
-	data, err := json.MarshalIndent(s.config, "", "  ")
-	if err != nil {
+	if current, err := os.ReadFile(s.path); err == nil {
+		if err := writeConfigBackup(s.path, current); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return writeAppConfig(s.path, s.config)
 }
 
 func (s *Store) Upsert(instance ServerInstance) (ServerInstance, error) {
@@ -294,6 +545,42 @@ func (s *Store) CompleteMaintenanceTask(id, status, message string) error {
 	return errors.New("maintenance task not found")
 }
 
+func (s *Store) MarkMaintenanceTaskRunning(id string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.config.MaintenanceTasks {
+		if s.config.MaintenanceTasks[index].ID == id {
+			s.config.MaintenanceTasks[index].LastRun = now.UnixMilli()
+			s.config.MaintenanceTasks[index].LastStatus = "running"
+			s.config.MaintenanceTasks[index].LastMessage = ""
+			return s.saveLocked()
+		}
+	}
+	return errors.New("maintenance task not found")
+}
+
+func (s *Store) RecoverInterruptedMaintenanceTasks(now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	recovered := 0
+	for index := range s.config.MaintenanceTasks {
+		task := &s.config.MaintenanceTasks[index]
+		if task.LastStatus != "running" {
+			continue
+		}
+		task.LastStatus = "interrupted"
+		task.LastMessage = "Agent 在任务完成前重启，任务已中断，请检查服务器状态后重试"
+		if task.NextRun == 0 && task.Enabled {
+			task.NextRun = nextMaintenanceRun(*task, now).UnixMilli()
+		}
+		recovered++
+	}
+	if recovered == 0 {
+		return 0, nil
+	}
+	return recovered, s.saveLocked()
+}
+
 func (s *Store) MergePlayerHistory(serverID string, players []Player, now time.Time) ([]PlayerHistoryEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -452,7 +739,7 @@ func withDefaults(instance ServerInstance) ServerInstance {
 		instance.RESTPort = 8212
 	}
 	if instance.Executable == "" && instance.RootPath != "" {
-		instance.Executable = filepath.Join(instance.RootPath, "PalServer.exe")
+		instance.Executable = defaultServerExecutable(instance.RootPath)
 	}
 	if instance.IconID == "" {
 		instance.IconID = "SheepBall"

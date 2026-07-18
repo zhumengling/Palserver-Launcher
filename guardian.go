@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const guardianRestartWindow = time.Hour
@@ -83,7 +81,7 @@ func (a *App) pollGuardian(now time.Time) {
 		a.guardianLastCheck[instance.ID] = now
 		a.processMu.Unlock()
 
-		status, _ := serverStatus(instance)
+		status, _ := a.GetStatus(instance.ID)
 		if !status.Running {
 			go a.recoverWithGuardian(instance, "server process is not running")
 			continue
@@ -138,13 +136,13 @@ func (a *App) recoverWithGuardian(instance ServerInstance, reason string) {
 	a.processMu.Unlock()
 	if !allowed {
 		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "guardian:exhausted", instance.ID, reason)
+			a.emit("guardian:exhausted", instance.ID, reason)
 		}
 		a.notifyDiscord(instance.ID, "guardian", "Guardian 已停止自动恢复", reason)
 		return
 	}
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "guardian:recovering", instance.ID, reason)
+		a.emit("guardian:recovering", instance.ID, reason)
 	}
 	status, _ := serverStatus(instance)
 	if status.Running {
@@ -162,6 +160,6 @@ func (a *App) recoverWithGuardian(instance ServerInstance, reason string) {
 	}
 	time.Sleep(2 * time.Second)
 	if err := a.StartServer(instance.ID); err != nil && a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "guardian:failed", instance.ID, err.Error())
+		a.emit("guardian:failed", instance.ID, err.Error())
 	}
 }

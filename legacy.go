@@ -104,6 +104,9 @@ func (a *App) UnbanPlayer(id, userID string) error {
 		return errors.New("user id is required")
 	}
 	_, err = restPost(instance, "/unban", map[string]any{"userid": userID})
+	if err == nil {
+		a.invalidateOfficialCache(id, "players")
+	}
 	return err
 }
 
@@ -129,7 +132,7 @@ func (a *App) GetServerPaths(id string) (map[string]string, error) {
 		"server":      instance.RootPath,
 		"saved":       filepath.Join(instance.RootPath, "Pal", "Saved"),
 		"world":       saveRoot,
-		"config":      filepath.Join(instance.RootPath, "Pal", "Saved", "Config", "WindowsServer"),
+		"config":      filepath.Join(instance.RootPath, "Pal", "Saved", "Config", serverConfigDirectoryName()),
 		"logs":        filepath.Join(win64Path(instance), "PalDefender", "Logs"),
 		"paldefender": palDefenderConfigTarget(win64Path(instance)),
 	}, nil
@@ -184,6 +187,9 @@ func (a *App) ClearSteamCMDCache() error {
 }
 
 func (a *App) ExportClientMods(id string) (string, error) {
+	if !serverModsSupported() {
+		return "", errors.New(serverModsUnsupportedReason())
+	}
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return "", err
@@ -224,6 +230,5 @@ func (a *App) ExportClientMods(id string) (string, error) {
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		return "", err
 	}
-	_ = a.OpenPath(destination)
 	return destination, nil
 }

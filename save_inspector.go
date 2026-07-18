@@ -1,10 +1,8 @@
 package main
 
 import (
-	"archive/zip"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/sys/windows"
 )
 
 type saveInspectorAsset struct {
@@ -29,41 +25,11 @@ type saveInspectorAsset struct {
 
 func selectSaveInspectorAsset(release githubRelease) (saveInspectorAsset, error) {
 	for _, asset := range release.Assets {
-		name := strings.ToLower(asset.Name)
-		if strings.HasSuffix(name, "windows_x86_64.zip") && strings.HasPrefix(name, "pst_") {
+		if saveInspectorReleaseAssetMatches(asset.Name) {
 			return saveInspectorAsset{Name: asset.Name, URL: asset.BrowserDownloadURL, Digest: asset.Digest, Size: asset.Size}, nil
 		}
 	}
-	return saveInspectorAsset{}, errors.New("Windows save inspector asset was not found")
-}
-
-func verifySHA256(data []byte, expected string) error {
-	expected = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(expected)), "sha256:")
-	if expected == "" {
-		return errors.New("release asset has no SHA-256 digest")
-	}
-	actual := sha256.Sum256(data)
-	if hex.EncodeToString(actual[:]) != expected {
-		return errors.New("save inspector checksum mismatch")
-	}
-	return nil
-}
-
-func verifySHA256File(path, expected string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return err
-	}
-	expected = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(expected)), "sha256:")
-	if expected == "" || hex.EncodeToString(hash.Sum(nil)) != expected {
-		return errors.New("save inspector checksum mismatch")
-	}
-	return nil
+	return saveInspectorAsset{}, errors.New(saveInspectorAssetMissingMessage())
 }
 
 func saveInspectorRoot() (string, error) {
@@ -81,7 +47,7 @@ func (a *App) GetSaveInspectorStatus() SaveInspectorStatus {
 		return SaveInspectorStatus{}
 	}
 	versionData, _ := os.ReadFile(filepath.Join(root, "version.txt"))
-	path := filepath.Join(root, "sav_cli.exe")
+	path := filepath.Join(root, saveInspectorExecutableName())
 	_, statErr := os.Stat(path)
 	return SaveInspectorStatus{Installed: statErr == nil, Version: strings.TrimSpace(string(versionData)), Path: path}
 }
@@ -133,46 +99,13 @@ func (a *App) InstallSaveInspector() (SaveInspectorStatus, error) {
 	if err != nil {
 		return SaveInspectorStatus{}, err
 	}
-	if err := extractNamedExecutable(temporaryPath, root, "sav_cli.exe"); err != nil {
+	if err := extractSaveInspectorExecutable(temporaryPath, root); err != nil {
 		return SaveInspectorStatus{}, err
 	}
 	if err := os.WriteFile(filepath.Join(root, "version.txt"), []byte(release.TagName), 0o600); err != nil {
 		return SaveInspectorStatus{}, err
 	}
 	return a.GetSaveInspectorStatus(), nil
-}
-
-func extractNamedExecutable(archivePath, destination, name string) error {
-	reader, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-	for _, file := range reader.File {
-		if !strings.EqualFold(filepath.Base(file.Name), name) {
-			continue
-		}
-		in, err := file.Open()
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		temporary := filepath.Join(destination, name+".tmp")
-		out, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o700)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(out, in)
-		closeErr := out.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		return os.Rename(temporary, filepath.Join(destination, name))
-	}
-	return errors.New("sav_cli.exe was not found in release archive")
 }
 
 func findLevelSave(instance ServerInstance) (string, error) {
@@ -225,7 +158,7 @@ func (a *App) InspectSave(serverID string) (SaveInspectionResult, error) {
 		_, _ = sendRCON(instance, "Save")
 		time.Sleep(2 * time.Second)
 	}
-	if _, err := a.CreateBackup(serverID); err != nil {
+	if _, err := a.createBackup(serverID); err != nil {
 		return SaveInspectionResult{}, fmt.Errorf("pre-inspection backup: %w", err)
 	}
 	levelPath, err := findLevelSave(instance)
@@ -269,7 +202,7 @@ func (a *App) InspectSave(serverID string) (SaveInspectionResult, error) {
 	defer cancel()
 	requestURL := "http://" + listener.Addr().String() + "/api/"
 	command := exec.CommandContext(ctx, status.Path, "-f", levelPath, "--request", requestURL, "--token", token)
-	command.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	command.SysProcAttr = hiddenServerSysProcAttr()
 	output, err := command.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return SaveInspectionResult{}, errors.New("save inspection timed out")

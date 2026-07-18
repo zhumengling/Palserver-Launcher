@@ -1,7 +1,7 @@
 import React from 'react'
 import {createRoot} from 'react-dom/client'
 import './style.css'
-import App from './App'
+import AgentLoginGate from './AgentLoginGate'
 
 const container = document.getElementById('root')
 
@@ -9,6 +9,6 @@ const root = createRoot(container!)
 
 root.render(
     <React.StrictMode>
-        <App/>
+        <AgentLoginGate/>
     </React.StrictMode>
 )

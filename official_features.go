@@ -228,6 +228,13 @@ func (a *App) ListOfficialWorkshopMods(id string) ([]OfficialWorkshopMod, error)
 }
 
 func (a *App) ImportOfficialWorkshopMod(id, source string) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
+	if !a.tryBeginOperation(id, "mods") {
+		return errors.New("server is busy")
+	}
+	defer a.endOperation(id)
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -313,6 +320,9 @@ func (a *App) ImportOfficialWorkshopMod(id, source string) error {
 }
 
 func (a *App) SetOfficialWorkshopModEnabled(id, packageName string, enabled bool) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -346,6 +356,9 @@ func (a *App) SetOfficialWorkshopModEnabled(id, packageName string, enabled bool
 }
 
 func (a *App) DeleteOfficialWorkshopMod(id, path string) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -439,6 +452,9 @@ func (a *App) GetOfficialWorkshopRoot(id string) (string, error) {
 }
 
 func (a *App) SaveOfficialWorkshopRoot(id, workshopRoot string) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -524,7 +540,7 @@ func (a *App) GetPerformanceAdvice(id string) ([]PerformanceAdvice, error) {
 	if err != nil {
 		return nil, err
 	}
-	status, err := serverStatus(instance)
+	status, err := a.cachedRuntimeStatus(instance)
 	if err != nil {
 		return nil, err
 	}

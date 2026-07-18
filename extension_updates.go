@@ -195,6 +195,29 @@ func writeJSONExclusive(path string, value any) error {
 	return file.Close()
 }
 
+func renameExtensionStagePath(source, destination string) error {
+	return renameExtensionStagePathWith(os.Rename, time.Sleep, source, destination)
+}
+
+func renameExtensionStagePathWith(rename func(string, string) error, sleep func(time.Duration), source, destination string) error {
+	var lastErr error
+	delay := 10 * time.Millisecond
+	for attempt := 0; attempt < 8; attempt++ {
+		if err := rename(source, destination); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt < 7 {
+			sleep(delay)
+			if delay < 80*time.Millisecond {
+				delay *= 2
+			}
+		}
+	}
+	return lastErr
+}
+
 func stageExtensionPayload(instance ServerInstance, info extensionReleaseInfo, extractedDir string) (manifest extensionUpdateManifest, err error) {
 	if err := validateExtensionID(info.ExtensionID); err != nil {
 		return extensionUpdateManifest{}, err
@@ -256,15 +279,15 @@ func stageExtensionPayload(instance ServerInstance, info extensionReleaseInfo, e
 	hadPending := false
 	if _, statErr := os.Stat(pending); statErr == nil {
 		hadPending = true
-		if err := os.Rename(pending, previous); err != nil {
+		if err := renameExtensionStagePath(pending, previous); err != nil {
 			return extensionUpdateManifest{}, err
 		}
 	} else if !os.IsNotExist(statErr) {
 		return extensionUpdateManifest{}, statErr
 	}
-	if err := os.Rename(incoming, pending); err != nil {
+	if err := renameExtensionStagePath(incoming, pending); err != nil {
 		if hadPending {
-			if restoreErr := os.Rename(previous, pending); restoreErr != nil {
+			if restoreErr := renameExtensionStagePath(previous, pending); restoreErr != nil {
 				return extensionUpdateManifest{}, errors.Join(err, fmt.Errorf("restore previous pending update: %w", restoreErr))
 			}
 		}
@@ -1417,6 +1440,9 @@ func (a *App) updateExtensionWith(id, extensionID string, dependencies extension
 	if err := validateExtensionID(extensionID); err != nil {
 		return ExtensionUpdateResult{}, err
 	}
+	if !coreExtensionSupported(extensionID) {
+		return ExtensionUpdateResult{}, errors.New(coreExtensionUnsupportedReason(extensionID))
+	}
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return ExtensionUpdateResult{}, err
@@ -1630,6 +1656,15 @@ func checkExtensionUpdatesWith(local []ExtensionStatus, client *http.Client, sou
 	var wait sync.WaitGroup
 	for index := range statuses {
 		status := statuses[index]
+		if !extensionStatusSupported(status) {
+			status.LatestVersion = ""
+			status.LatestAsset = ""
+			status.LatestUpdatedAt = ""
+			status.UpdateAvailable = false
+			status.UpdateCheckError = status.UnsupportedReason
+			statuses[index] = status
+			continue
+		}
 		status.LatestVersion = ""
 		status.LatestAsset = ""
 		status.LatestUpdatedAt = ""
@@ -1676,6 +1711,12 @@ func (a *App) CheckExtensionUpdates(id string) ([]ExtensionStatus, error) {
 	local, err := a.ListExtensions(id)
 	if err != nil {
 		return nil, err
+	}
+	for index := range local {
+		if !local[index].Supported {
+			local[index].UpdateAvailable = false
+			local[index].UpdateCheckError = local[index].UnsupportedReason
+		}
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	return checkExtensionUpdatesWith(local, client, extensionReleaseSourceFor), nil

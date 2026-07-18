@@ -1,0 +1,30 @@
+[Unit]
+Description=Palserver Linux Agent and Web Console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=palserver
+Group=palserver
+Environment=PALSERVER_LAUNCHER_HOME=/var/lib/palserver-launcher
+Environment=PALSERVER_ALLOWED_SERVER_ROOTS=/var/lib/palserver-launcher/servers
+Environment=HOME=/var/lib/palserver
+WorkingDirectory=/var/lib/palserver-launcher
+ExecStart=/var/lib/palserver-launcher/bin/pal-agent --listen 127.0.0.1:8210 --auth-file /var/lib/palserver-launcher/admin-auth.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillMode=process
+UMask=0027
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palserver-launcher /var/lib/palserver
+
+[Install]
+WantedBy=multi-user.target

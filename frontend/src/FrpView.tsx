@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Download, Network, Play, RefreshCw, Save, ShieldAlert, Square, Terminal } from 'lucide-react';
-import * as API from '../wailsjs/go/main/App';
+import API from './platformApi';
 import { main } from '../wailsjs/go/models';
 
 export default function FrpView({ instance, run }: { instance: main.ServerInstance; run: Function }) {

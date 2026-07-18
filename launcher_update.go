@@ -15,8 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const LauncherVersion = "0.1.5"
@@ -90,12 +88,11 @@ func selectLauncherReleaseAsset(release githubRelease) (launcherReleaseAsset, er
 		return launcherReleaseAsset{}, err
 	}
 	for _, asset := range release.Assets {
-		name := strings.ToLower(asset.Name)
-		if name == "palserver-launcher.exe" || (strings.HasPrefix(name, "palserver-launcher-") && strings.HasSuffix(name, "-windows-amd64.exe")) {
+		if launcherReleaseAssetMatches(asset.Name) {
 			return launcherReleaseAsset{Name: asset.Name, URL: asset.BrowserDownloadURL, Digest: asset.Digest, Size: asset.Size}, nil
 		}
 	}
-	return launcherReleaseAsset{}, errors.New("Windows amd64 launcher executable was not found in the release")
+	return launcherReleaseAsset{}, errors.New(launcherReleaseAssetMissingMessage())
 }
 
 func buildLauncherUpdateInfo(release githubRelease, currentVersion string) (LauncherUpdateInfo, launcherReleaseAsset, error) {
@@ -250,15 +247,6 @@ func parseLauncherUpdaterArgs(args []string) (launcherUpdaterOptions, bool, erro
 	return options, true, nil
 }
 
-func launcherUpdatePaths(base, version string) (download, helper string, err error) {
-	normalized, err := normalizeLauncherVersion(version)
-	if err != nil {
-		return "", "", err
-	}
-	root := filepath.Join(base, "updates", normalized)
-	return filepath.Join(root, "palserver-launcher-update.exe"), filepath.Join(root, "palserver-launcher-updater.exe"), nil
-}
-
 func (a *App) GetLauncherVersion() string { return LauncherVersion }
 
 func (a *App) CheckLauncherUpdate() (LauncherUpdateInfo, error) {
@@ -274,7 +262,7 @@ func (a *App) emitLauncherUpdateProgress(message string, percent int, downloaded
 	if a.ctx == nil {
 		return
 	}
-	wailsruntime.EventsEmit(a.ctx, "launcher:update-progress", LauncherUpdateProgress{
+	a.emit("launcher:update-progress", LauncherUpdateProgress{
 		Message: message, Percent: percent, Downloaded: downloaded, Total: total,
 	})
 }
@@ -329,6 +317,10 @@ func (a *App) ApplyLauncherUpdate() (returnErr error) {
 	}); err != nil {
 		return err
 	}
+	replacementPath, err := prepareLauncherReplacement(downloadPath)
+	if err != nil {
+		return fmt.Errorf("prepare launcher replacement: %w", err)
+	}
 	a.emitLauncherUpdateProgress("校验完成，正在准备替换", 94, asset.Size, asset.Size)
 	currentExecutable, err := os.Executable()
 	if err != nil {
@@ -345,13 +337,13 @@ func (a *App) ApplyLauncherUpdate() (returnErr error) {
 	if err := copyLauncherFile(currentExecutable, helperPath); err != nil {
 		return fmt.Errorf("prepare launcher updater: %w", err)
 	}
-	if err := launchUpdaterProcess(helperPath, launcherUpdaterOptions{Target: currentExecutable, Replacement: downloadPath, PID: os.Getpid()}); err != nil {
+	if err := launchUpdaterProcess(helperPath, launcherUpdaterOptions{Target: currentExecutable, Replacement: replacementPath, PID: os.Getpid()}); err != nil {
 		return fmt.Errorf("start launcher updater: %w", err)
 	}
 	a.emitLauncherUpdateProgress("下载完成，启动器即将重启", 100, asset.Size, asset.Size)
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		wailsruntime.Quit(a.ctx)
+		quitApplicationPlatform(a)
 	}()
 	return nil
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Ban, Check, Edit3, RefreshCw, Search, Shield, UserRoundSearch } from 'lucide-react';
-import * as API from '../wailsjs/go/main/App';
+import API from './platformApi';
 import { main } from '../wailsjs/go/models';
 
 export default function PlayersHistoryView({ id, run }: { id: string; run: Function }) {

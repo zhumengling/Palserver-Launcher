@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 import (
@@ -167,13 +169,14 @@ func TestFrontendPlayerRewardsAndWorldMapAreExposed(t *testing.T) {
 	}
 }
 
-func TestOpenServerDirectoryUsesTheSharedActionErrorHandler(t *testing.T) {
+func TestRemoteLinuxDoesNotExposeServerDirectoryAction(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("frontend", "src", "App.tsx"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `onRun('open-server-path', () => API.OpenPath(instance.rootPath), '服务器目录已打开')`) {
-		t.Fatal("opening the server directory bypasses the shared action error handler")
+	source := string(data)
+	if !strings.Contains(source, `onRun('open-server-path'`) || !strings.Contains(source, `API.OpenPath(instance.rootPath)`) || !strings.Contains(source, `服务器文件由程序自动管理`) || strings.Contains(source, `navigator.clipboard.writeText(instance.rootPath)`) {
+		t.Fatal("desktop directory access or remote Linux path abstraction is missing")
 	}
 }
 
@@ -255,7 +258,7 @@ func TestFrontendStatusPollingDoesNotOverlapSlowStatusRequests(t *testing.T) {
 	if strings.Contains(source, "window.setInterval(() => refreshStatuses(), 3000)") {
 		t.Fatal("status polling starts a new refresh every three seconds even when the previous request is still running")
 	}
-	for _, expected := range []string{"await refreshStatuses()", "window.setTimeout(poll, 3000)"} {
+	for _, expected := range []string{"EventsOn('server:status'", "await refreshStatuses()", "window.setTimeout(poll, 15000)"} {
 		if !strings.Contains(source, expected) {
 			t.Fatalf("serial status polling is missing %q", expected)
 		}
@@ -271,6 +274,22 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 	got, err := safeJoin(root, "Pal", "Saved")
 	if err != nil || got != want {
 		t.Fatalf("safeJoin = %q, %v; want %q", got, err, want)
+	}
+}
+
+func TestPathWithinAllowedRootsRejectsSiblingPrefixes(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "palworld")
+	if !pathWithinAllowedRoots(filepath.Join(root, "server-a"), []string{root}) {
+		t.Fatal("child server path was rejected")
+	}
+	if !pathWithinAllowedRoots(root, []string{root}) {
+		t.Fatal("allowed root itself was rejected")
+	}
+	if pathWithinAllowedRoots(root+"-other", []string{root}) {
+		t.Fatal("sibling path sharing the same prefix was accepted")
+	}
+	if pathWithinAllowedRoots(filepath.Dir(root), []string{root}) {
+		t.Fatal("parent path was accepted")
 	}
 }
 
@@ -924,7 +943,7 @@ func TestPluginsViewChecksAndAppliesExtensionUpdates(t *testing.T) {
 	if start < 0 {
 		t.Fatal("frontend is missing PluginsView")
 	}
-	end := strings.Index(source[start:], "function ModsView")
+	end := strings.Index(source[start:], "function DiagnosticsView")
 	if end < 0 {
 		t.Fatal("frontend is missing the PluginsView boundary")
 	}
@@ -938,8 +957,9 @@ func TestPluginsViewChecksAndAppliesExtensionUpdates(t *testing.T) {
 		`running ? '下载更新' : '安装/更新'`,
 		`disabled={busy || checking}`,
 		`disabled={busy || checking || !hasUpdateCandidates}`,
-		`disabled={busy || running || !item.installed}`,
-		`disabled={busy || checking || item.pending}`,
+		`disabled={busy || running || !item.supported || !item.installed}`,
+		`disabled={busy || checking || item.pending || !item.supported}`,
+		`item.unsupportedReason`,
 	} {
 		if !strings.Contains(pluginsView, expected) {
 			t.Fatalf("PluginsView is missing %q", expected)
@@ -960,7 +980,7 @@ func TestPluginsViewIgnoresStaleRefreshResults(t *testing.T) {
 	}
 	source := string(appData)
 	start := strings.Index(source, "function PluginsView")
-	end := strings.Index(source[start:], "function ModsView")
+	end := strings.Index(source[start:], "function DiagnosticsView")
 	if start < 0 || end < 0 {
 		t.Fatal("frontend PluginsView source body was not found")
 	}

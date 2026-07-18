@@ -207,7 +207,7 @@ func (a *App) GetPlayers(id string) ([]Player, error) {
 	if err != nil {
 		return nil, err
 	}
-	return getOfficialPlayers(instance)
+	return a.cachedServerPlayers(instance)
 }
 
 func (a *App) PlayerAction(id string, request ActionRequest) (string, error) {
@@ -221,7 +221,13 @@ func (a *App) PlayerAction(id string, request ActionRequest) (string, error) {
 	switch request.Action {
 	case "kick", "ban":
 		_, err = restPost(instance, "/"+request.Action, map[string]any{"userid": request.UserID, "message": "Managed by Palserver Launcher"})
+		if err == nil {
+			a.invalidateOfficialCache(id, "players")
+		}
 		return "OK", err
+	}
+	if err := ensurePluginCommandsReady(instance); err != nil {
+		return "", err
 	}
 	if request.Action == "pal" && request.Pal != nil && request.Pal.Custom {
 		return grantCustomPal(instance, request)

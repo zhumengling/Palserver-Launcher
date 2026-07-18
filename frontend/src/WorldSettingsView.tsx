@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileCode2, Save, SlidersHorizontal } from 'lucide-react';
-import * as API from '../wailsjs/go/main/App';
+import API from './platformApi';
 
 type Run = (label: string, action: () => Promise<unknown>, success?: string) => Promise<void>;
 

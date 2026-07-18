@@ -2,6 +2,13 @@
 build/bin/
 build/darwin/
 build/windows/installer/
+build/go-tmp/
+build/go-cache/
+build/npm-cache/
+build/browser-ui-smoke/
+build/*.tar.gz
+build/*.tar.gz.sha256
+build/webpreview-smoke-data/
 frontend/dist/
 frontend/wailsjs/
 frontend/package.json.md5

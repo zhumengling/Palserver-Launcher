@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 import (
@@ -169,7 +171,9 @@ func runSteamCMD(instance ServerInstance, onProgress func(steamCMDProgress)) err
 	command.Dir = filepath.Dir(steamcmd)
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	_ = os.MkdirAll(filepath.Join(instance.RootPath, "launcher-logs"), 0o755)
-	logFile, _ := os.OpenFile(filepath.Join(instance.RootPath, "launcher-logs", "steamcmd.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logPath := filepath.Join(instance.RootPath, "launcher-logs", "steamcmd.log")
+	_ = rotateLogFile(logPath, managedLogMaxBytes, managedLogBackups)
+	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if logFile != nil {
 		defer logFile.Close()
 	}

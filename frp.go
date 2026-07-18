@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -168,12 +169,11 @@ func buildFrpcConfig(instance ServerInstance, settings FrpSettings, token string
 
 func selectFRPReleaseAsset(release githubRelease) (name, url, digest string, err error) {
 	for _, asset := range release.Assets {
-		lower := strings.ToLower(asset.Name)
-		if strings.HasSuffix(lower, "windows_amd64.zip") && strings.HasPrefix(lower, "frp_") {
+		if frpReleaseAssetMatches(asset.Name) {
 			return asset.Name, asset.BrowserDownloadURL, asset.Digest, nil
 		}
 	}
-	return "", "", "", errors.New("FRP Windows amd64 release asset was not found")
+	return "", "", "", errors.New("FRP release asset for this operating system was not found")
 }
 
 func frpRoot() (string, error) {
@@ -190,7 +190,7 @@ func frpExecutable() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, "frpc.exe"), nil
+	return filepath.Join(root, frpExecutableName()), nil
 }
 
 func frpServerRoot(serverID string) (string, error) {
@@ -320,13 +320,13 @@ func (a *App) InstallFrp() (FrpStatus, error) {
 	if err != nil {
 		return FrpStatus{}, err
 	}
-	if err := extractNamedExecutable(temporaryPath, root, "frpc.exe"); err != nil {
+	if err := extractFRPExecutable(temporaryPath, root); err != nil {
 		return FrpStatus{}, err
 	}
 	if err := os.WriteFile(filepath.Join(root, "version.txt"), []byte(release.TagName), 0o600); err != nil {
 		return FrpStatus{}, err
 	}
-	return FrpStatus{Installed: true, Version: release.TagName, Path: filepath.Join(root, "frpc.exe")}, nil
+	return FrpStatus{Installed: true, Version: release.TagName, Path: filepath.Join(root, frpExecutableName())}, nil
 }
 
 func (a *App) StartFrp(serverID string) error {
@@ -400,7 +400,9 @@ func (a *App) StartFrp(serverID string) error {
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(filepath.Join(root, "frpc.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logPath := filepath.Join(root, "frpc.log")
+	_ = rotateLogFile(logPath, managedLogMaxBytes, managedLogBackups)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -437,7 +439,7 @@ func (a *App) StopFrp(serverID string) error {
 	if command == nil || command.Process == nil {
 		return nil
 	}
-	_ = exec.Command("taskkill", "/PID", strconv.Itoa(command.Process.Pid), "/T").Run()
+	_ = terminateProcessTree(command.Process.Pid, false)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		a.processMu.Lock()
@@ -456,21 +458,13 @@ func (a *App) GetFrpLog(serverID string, lines int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(filepath.Join(root, "frpc.log"))
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	parts := strings.Split(string(data), "\n")
-	if lines > 0 && len(parts) > lines {
-		parts = parts[len(parts)-lines:]
-	}
-	return strings.Join(parts, "\n"), nil
+	return readLogLines(filepath.Join(root, "frpc.log"), lines)
 }
 
 func (a *App) startAutomaticFrpClients() {
+	if runtime.GOOS == "linux" {
+		return
+	}
 	for _, config := range a.store.Snapshot().FrpConfigs {
 		if config.AutoStart {
 			_ = a.StartFrp(config.ServerID)

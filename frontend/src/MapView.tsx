@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Map } from 'lucide-react';
 
-import * as API from '../wailsjs/go/main/App';
+import API from './platformApi';
 import { main } from '../wailsjs/go/models';
 import { DEFAULT_MAP_MODE, MAP_CONFIGS, MapMode, MapPoint, projectPlayerLocation } from './mapConfig';
 

@@ -142,7 +142,7 @@ func (a *App) performServerUpdate(id string, force bool) error {
 			return ErrPlayersOnline
 		}
 	}
-	if _, backupErr := a.CreateBackup(id); backupErr != nil && !os.IsNotExist(backupErr) && !errors.Is(backupErr, ErrSaveDirectoryNotFound) {
+	if _, backupErr := a.createBackup(id); backupErr != nil && !os.IsNotExist(backupErr) && !errors.Is(backupErr, ErrSaveDirectoryNotFound) {
 		return fmt.Errorf("pre-update backup: %w", backupErr)
 	}
 	if wasRunning && len(players) > 0 {
@@ -162,7 +162,7 @@ func (a *App) performServerUpdate(id string, force bool) error {
 			return err
 		}
 	}
-	if err := a.InstallOrUpdateServer(id); err != nil {
+	if err := a.installOrUpdateServer(id); err != nil {
 		return err
 	}
 	if wasRunning {

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 func nextMaintenanceRun(task MaintenanceTask, from time.Time) time.Time {
@@ -96,14 +94,23 @@ func (a *App) pollMaintenanceTasks(now time.Time) {
 func (a *App) executeMaintenanceTask(task MaintenanceTask) {
 	if !a.tryBeginOperation(task.ServerID, task.Type) {
 		_ = a.store.CompleteMaintenanceTask(task.ID, "skipped", "server is busy")
+		a.emit("maintenance:finished", task.ID, "skipped", "server is busy")
 		return
 	}
+	if err := a.store.MarkMaintenanceTaskRunning(task.ID, time.Now()); err != nil {
+		a.endOperation(task.ServerID)
+		return
+	}
+	a.executeMaintenanceTaskLocked(task)
+}
+
+func (a *App) executeMaintenanceTaskLocked(task MaintenanceTask) {
 	defer a.endOperation(task.ServerID)
-	runtime.EventsEmit(a.ctx, "maintenance:started", task)
+	a.emit("maintenance:started", task)
 	var err error
 	switch task.Type {
 	case "backup":
-		_, err = a.CreateBackup(task.ServerID)
+		_, err = a.createBackup(task.ServerID)
 	case "restart":
 		err = a.restartServerForMaintenance(task.ServerID)
 	case "update":
@@ -113,16 +120,16 @@ func (a *App) executeMaintenanceTask(task MaintenanceTask) {
 	}
 	if errors.Is(err, ErrNoUpdateAvailable) || errors.Is(err, ErrPlayersOnline) {
 		_ = a.store.CompleteMaintenanceTask(task.ID, "skipped", err.Error())
-		runtime.EventsEmit(a.ctx, "maintenance:finished", task.ID, "skipped", err.Error())
+		a.emit("maintenance:finished", task.ID, "skipped", err.Error())
 		return
 	}
 	if err != nil {
 		_ = a.store.CompleteMaintenanceTask(task.ID, "error", err.Error())
-		runtime.EventsEmit(a.ctx, "maintenance:finished", task.ID, "error", err.Error())
+		a.emit("maintenance:finished", task.ID, "error", err.Error())
 		return
 	}
 	_ = a.store.CompleteMaintenanceTask(task.ID, "ok", "completed")
-	runtime.EventsEmit(a.ctx, "maintenance:finished", task.ID, "ok", "completed")
+	a.emit("maintenance:finished", task.ID, "ok", "completed")
 }
 
 func (a *App) restartServerForMaintenance(id string) error {
@@ -196,6 +203,13 @@ func (a *App) RunMaintenanceTask(id string) error {
 	if err != nil {
 		return err
 	}
-	go a.executeMaintenanceTask(task)
+	if !a.tryBeginOperation(task.ServerID, task.Type) {
+		return errors.New("server is busy")
+	}
+	if err := a.store.MarkMaintenanceTaskRunning(task.ID, time.Now()); err != nil {
+		a.endOperation(task.ServerID)
+		return err
+	}
+	go a.executeMaintenanceTaskLocked(task)
 	return nil
 }

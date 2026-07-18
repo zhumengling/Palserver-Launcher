@@ -267,6 +267,12 @@ func (a *App) SaveWorldSettingsValues(id string, updates map[string]string) erro
 	for key, target := range map[string]*string{"ServerName": &instance.Name, "PublicIP": &instance.PublicIP, "AdminPassword": &instance.AdminPassword, "ServerPassword": &instance.ServerPassword} {
 		if value, ok := updates[key]; ok {
 			*target = value
+			if key == "AdminPassword" {
+				instance.EncryptedAdminPassword = ""
+			}
+			if key == "ServerPassword" {
+				instance.EncryptedServerPassword = ""
+			}
 			instanceChanged = true
 		}
 	}
@@ -281,6 +287,9 @@ func (a *App) SaveWorldSettingsValues(id string, updates map[string]string) erro
 	}
 	if instanceChanged {
 		_, err = a.store.Upsert(instance)
+	}
+	if err == nil {
+		a.invalidateOfficialCache(id, "settings", "info")
 	}
 	return err
 }

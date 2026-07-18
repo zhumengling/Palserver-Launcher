@@ -1,49 +1,18 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"golang.org/x/sys/windows"
 )
 
-type processInfo struct {
-	ProcessID      int     `json:"ProcessId"`
-	ExecutablePath string  `json:"ExecutablePath"`
-	CPU            float64 `json:"CPU"`
-	WorkingSet     float64 `json:"WorkingSet64"`
-}
-
-func hiddenServerSysProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW | syscall.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
-}
-
-func serverLaunchExecutable(instance ServerInstance) string {
-	shipping := filepath.Join(instance.RootPath, "Pal", "Binaries", "Win64", "PalServer-Win64-Shipping.exe")
-	if _, err := os.Stat(shipping); err == nil {
-		return shipping
-	}
-	return instance.Executable
-}
-
-func usesPalServerWrapper(path string) bool {
-	return strings.EqualFold(filepath.Base(filepath.Clean(path)), "PalServer.exe")
-}
-
 func serverChildProcessRunning(instance ServerInstance) bool {
-	rootPattern := strings.ReplaceAll(serverProcessRootPattern(instance.Executable), "'", "''")
-	query := `$rootPattern='` + rootPattern + `'; [bool](Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('PalServer-Win64-Shipping-Cmd.exe','PalServer-Win64-Shipping.exe') -and $_.ExecutablePath -like $rootPattern } | Select-Object -First 1) | ConvertTo-Json -Compress`
-	output, err := newHiddenPowerShell(query).Output()
-	return err == nil && strings.EqualFold(strings.TrimSpace(string(output)), "true")
+	process, found, err := defaultProcessRuntime.FindServerProcess(instance)
+	return err == nil && found && process.PID > 0 && !usesPalServerWrapper(process.Path)
 }
 
 func waitForServerChild(instance ServerInstance, timeout time.Duration) bool {
@@ -59,12 +28,6 @@ func waitForServerChild(instance ServerInstance, timeout time.Duration) bool {
 	}
 }
 
-func newHiddenPowerShell(query string) *exec.Cmd {
-	command := exec.Command("powershell", "-NoProfile", "-Command", query)
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
-	return command
-}
-
 func rconListenerMatchesProcess(running bool, processID, listenerOwnerPID int) bool {
 	return running && processID > 0 && listenerOwnerPID == processID
 }
@@ -74,65 +37,100 @@ func serverProcessRootPattern(executable string) string {
 }
 
 func serverStatus(instance ServerInstance) (RuntimeStatus, error) {
-	status := RuntimeStatus{}
-	target := strings.ReplaceAll(filepath.Clean(instance.Executable), "'", "''")
-	rootPattern := strings.ReplaceAll(serverProcessRootPattern(instance.Executable), "'", "''")
-	query := `$target='` + target + `';$rootPattern='` + rootPattern + `'; Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('PalServer.exe','PalServer-Win64-Shipping-Cmd.exe','PalServer-Win64-Shipping.exe') -and ($_.ExecutablePath -eq $target -or $_.ExecutablePath -like $rootPattern) } | Select-Object -First 1 ProcessId,ExecutablePath | ConvertTo-Json -Compress`
-	out, _ := newHiddenPowerShell(query).Output()
-	if len(strings.TrimSpace(string(out))) > 0 {
-		var info processInfo
-		if json.Unmarshal(out, &info) == nil && info.ProcessID > 0 {
-			status.Running = true
-			status.PID = info.ProcessID
-			metricQuery := fmt.Sprintf(`$p=Get-Process -Id %d -ErrorAction SilentlyContinue; if($p){$rconOwner=Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | Where-Object {$_.OwningProcess -eq %d} | Select-Object -First 1 -ExpandProperty OwningProcess; [pscustomobject]@{CPU=$p.CPU;WorkingSet64=$p.WorkingSet64;StartTime=$p.StartTime.ToFileTimeUtc();RCONListenerPID=[int]$rconOwner}|ConvertTo-Json -Compress}`, info.ProcessID, instance.RCONPort, info.ProcessID)
-			metricOut, _ := newHiddenPowerShell(metricQuery).Output()
-			var metrics struct {
-				CPU, WorkingSet64 float64
-				StartTime         int64
-				RCONListenerPID   int
-			}
-			if json.Unmarshal(metricOut, &metrics) == nil {
-				status.CPU = metrics.CPU
-				status.MemoryMB = metrics.WorkingSet64 / 1024 / 1024
-				status.RCONAvailable = rconListenerMatchesProcess(status.Running, status.PID, metrics.RCONListenerPID)
-				if metrics.StartTime > 0 {
-					unix := (metrics.StartTime - 116444736000000000) / 10000000
-					status.Uptime = time.Now().Unix() - unix
-				}
-			}
-		}
+	process, found, processErr := defaultProcessRuntime.FindServerProcess(instance)
+	if processErr != nil {
+		return RuntimeStatus{}, processErr
 	}
-	if status.Running {
-		if info, err := restInfo(instance); err == nil {
-			status.RESTAvailable = true
-			status.Version = fmt.Sprint(info["version"])
-		}
-		if metrics, err := restGet(instance, "/metrics"); err == nil {
-			status.FPS = number(metrics["serverfps"])
-			status.FrameTime = number(metrics["serverframetime"])
-			status.Players = int(number(metrics["currentplayernum"]))
-			status.MaxPlayers = int(number(metrics["maxplayernum"]))
-			status.BaseCampNum = int(number(metrics["basecampnum"]))
-			status.WorldDays = int(number(metrics["days"]))
-			if uptime := int64(number(metrics["uptime"])); uptime > 0 {
-				status.Uptime = uptime
-			}
-		}
-	}
-	return status, nil
+	return serverStatusFromProcess(instance, process, found), nil
 }
 
-func number(value any) float64 {
-	switch v := value.(type) {
-	case float64:
-		return v
-	case int:
-		return float64(v)
-	case string:
-		n, _ := strconv.ParseFloat(v, 64)
-		return n
+func serverStatusFromProcessBase(instance ServerInstance, process serverProcessSnapshot, found bool) RuntimeStatus {
+	status := RuntimeStatus{}
+	if found {
+		status.Running, status.PID = true, process.PID
+		status.CPU, status.MemoryMB = process.CPUPercent, process.MemoryMB
+		if !process.StartedAt.IsZero() {
+			status.Uptime = max(0, time.Now().Unix()-process.StartedAt.Unix())
+		}
+		ownerPID, listening, _ := defaultProcessRuntime.TCPListenerOwner(instance.RCONPort)
+		status.RCONAvailable = rconListenerMatchesProcess(status.Running, status.PID, ownerPID) && listening
 	}
-	return 0
+	return status
+}
+
+type serverInfoResult struct {
+	value ServerInfo
+	err   error
+}
+
+type serverMetricsResult struct {
+	value ServerMetrics
+	err   error
+}
+
+func applyOfficialStatus(status RuntimeStatus, info ServerInfo, infoErr error, metrics ServerMetrics, metricsErr error) RuntimeStatus {
+	if infoErr == nil {
+		status.RESTAvailable = true
+		status.Version = info.Version
+	}
+	if metricsErr == nil {
+		status.FPS = metrics.ServerFPS
+		status.FrameTime = metrics.ServerFrameTime
+		status.Players = metrics.CurrentPlayerNum
+		status.MaxPlayers = metrics.MaxPlayerNum
+		status.BaseCampNum = metrics.BaseCampNum
+		status.WorldDays = metrics.Days
+		if metrics.Uptime > 0 {
+			status.Uptime = metrics.Uptime
+		}
+	}
+	return status
+}
+
+func fetchServerOfficialStatus(info func() (ServerInfo, error), metrics func() (ServerMetrics, error)) (serverInfoResult, serverMetricsResult) {
+	infoChannel := make(chan serverInfoResult, 1)
+	metricsChannel := make(chan serverMetricsResult, 1)
+	go func() {
+		value, err := info()
+		infoChannel <- serverInfoResult{value: value, err: err}
+	}()
+	go func() {
+		value, err := metrics()
+		metricsChannel <- serverMetricsResult{value: value, err: err}
+	}()
+	return <-infoChannel, <-metricsChannel
+}
+
+func serverStatusFromProcess(instance ServerInstance, process serverProcessSnapshot, found bool) RuntimeStatus {
+	status := serverStatusFromProcessBase(instance, process, found)
+	if !status.Running {
+		return status
+	}
+	info, metrics := fetchServerOfficialStatus(
+		func() (ServerInfo, error) { return getOfficialServerInfo(instance) },
+		func() (ServerMetrics, error) { return getOfficialServerMetrics(instance) },
+	)
+	return applyOfficialStatus(status, info.value, info.err, metrics.value, metrics.err)
+}
+
+func (a *App) cachedStatusFromProcess(instance ServerInstance, process serverProcessSnapshot, found bool) RuntimeStatus {
+	status := serverStatusFromProcessBase(instance, process, found)
+	if !status.Running {
+		return status
+	}
+	info, metrics := fetchServerOfficialStatus(
+		func() (ServerInfo, error) { return a.cachedServerInfo(instance) },
+		func() (ServerMetrics, error) { return a.cachedServerMetrics(instance) },
+	)
+	return applyOfficialStatus(status, info.value, info.err, metrics.value, metrics.err)
+}
+
+func (a *App) cachedRuntimeStatus(instance ServerInstance) (RuntimeStatus, error) {
+	process, found, processErr := defaultProcessRuntime.FindServerProcess(instance)
+	if processErr != nil {
+		return RuntimeStatus{}, processErr
+	}
+	return a.cachedStatusFromProcess(instance, process, found), nil
 }
 
 func (a *App) GetStatus(id string) (RuntimeStatus, error) {
@@ -140,7 +138,69 @@ func (a *App) GetStatus(id string) (RuntimeStatus, error) {
 	if err != nil {
 		return RuntimeStatus{}, err
 	}
-	return serverStatus(instance)
+	status, cached := a.cachedServerStatus(id, 4*time.Second)
+	if !cached {
+		status, err = a.cachedRuntimeStatus(instance)
+		if err != nil {
+			return RuntimeStatus{}, err
+		}
+		a.cacheServerStatus(id, status, time.Now())
+	}
+	starting, stopping := a.serverTransitionFlags(id)
+	return applyRuntimeState(status, a.currentOperation(id), starting, stopping, time.Now()), nil
+}
+
+func applyRuntimeState(status RuntimeStatus, operation string, starting, stopping bool, checkedAt time.Time) RuntimeStatus {
+	status.CheckedAt = checkedAt.UnixMilli()
+	switch operation {
+	case "update", "install":
+		status.State, status.StateMessage = "updating", "正在更新服务器程序"
+	case "backup":
+		status.State, status.StateMessage = "backing_up", "正在保存并复制服务器存档"
+	case "restore":
+		status.State, status.StateMessage = "restoring", "正在校验并恢复服务器存档"
+	case "save-inspector":
+		status.State, status.StateMessage = "inspecting", "正在备份并解析服务器存档"
+	case "duplicate":
+		status.State, status.StateMessage = "duplicating", "正在复制服务器程序与存档"
+	case "delete":
+		status.State, status.StateMessage = "deleting", "正在删除服务器数据"
+	case "restart", "guardian":
+		status.State, status.StateMessage = "restarting", "正在停止并重新启动服务器"
+	default:
+		switch {
+		case stopping && status.Running:
+			status.State, status.StateMessage = "stopping", "已发送关服指令，正在等待服务器进程退出"
+		case starting:
+			status.State, status.StateMessage = "starting", "正在启动服务器并等待游戏进程稳定"
+		case status.Running && !status.RESTAvailable:
+			status.State, status.StateMessage = "degraded", "服务器进程正在运行，但官方 REST API 暂不可用"
+		case status.Running:
+			status.State, status.StateMessage = "running", "服务器运行正常"
+		default:
+			status.State, status.StateMessage = "stopped", "服务器已停止"
+		}
+	}
+	return status
+}
+
+func (a *App) setServerStarting(id string, starting bool) {
+	a.processMu.Lock()
+	defer a.processMu.Unlock()
+	if a.startingServers == nil {
+		a.startingServers = map[string]bool{}
+	}
+	if starting {
+		a.startingServers[id] = true
+	} else {
+		delete(a.startingServers, id)
+	}
+}
+
+func (a *App) serverTransitionFlags(id string) (starting, stopping bool) {
+	a.processMu.Lock()
+	defer a.processMu.Unlock()
+	return a.startingServers[id], a.expectedStops[id]
 }
 
 func prepareServerBeforeLaunch(instance ServerInstance) error {
@@ -157,10 +217,19 @@ func (a *App) StartServer(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateManagedServerRoot(instance.RootPath); err != nil {
+		return err
+	}
+	if err := validatePlatformServerExecutable(instance); err != nil {
+		return err
+	}
 	status, _ := serverStatus(instance)
 	if status.Running {
 		return errors.New("server is already running")
 	}
+	a.invalidateOfficialCache(id)
+	a.setServerStarting(id, true)
+	defer a.setServerStarting(id, false)
 	runningInstances := make([]ServerInstance, 0)
 	for _, other := range a.store.Snapshot().Instances {
 		if other.ID == instance.ID {
@@ -214,10 +283,13 @@ func (a *App) StartServer(id string) error {
 	cmd.SysProcAttr = hiddenServerSysProcAttr()
 	logDir := filepath.Join(instance.RootPath, "launcher-logs")
 	_ = os.MkdirAll(logDir, 0o755)
-	logFile, err := os.OpenFile(filepath.Join(logDir, "server.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logPath := filepath.Join(logDir, "server.log")
+	_ = rotateLogFile(logPath, managedLogMaxBytes, managedLogBackups)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintf(logFile, "%s%s =====\n", compatibilityLaunchMarker, time.Now().Format(time.RFC3339))
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
@@ -231,22 +303,42 @@ func (a *App) StartServer(id string) error {
 		// the child through the instance process detector instead.
 		if !waitForServerChild(instance, 10*time.Second) {
 			go func() { _ = <-exited; _ = logFile.Close() }()
-			return serverStartupFailure(nil, readLogTail(logFile.Name()))
+			logTail := readLogTail(logFile.Name())
+			failure := serverStartupFailure(nil, logTail)
+			if recordPluginCrash(instance, logTail).PluginRelated {
+				return fmt.Errorf("%w 检测到 UE4SS/PalDefender 相关崩溃，请在插件页使用安全模式启动", failure)
+			}
+			return failure
 		}
 	} else {
 		select {
 		case waitErr := <-exited:
 			_ = logFile.Close()
-			return serverStartupFailure(waitErr, readLogTail(logFile.Name()))
+			logTail := readLogTail(logFile.Name())
+			failure := serverStartupFailure(waitErr, logTail)
+			if recordPluginCrash(instance, fmt.Sprint(waitErr)+"\n"+logTail).PluginRelated {
+				return fmt.Errorf("%w 检测到 UE4SS/PalDefender 相关崩溃，请在插件页使用安全模式启动", failure)
+			}
+			return failure
 		case <-time.After(3 * time.Second):
 		}
 	}
 	a.onServerStarted(id, time.Now())
+	actualPID := cmd.Process.Pid
+	if process, found, _ := defaultProcessRuntime.FindServerProcess(instance); found {
+		actualPID = process.PID
+	}
+	watcher := "cmd"
+	if usesPalServerWrapper(launchPath) {
+		watcher = "monitor"
+	}
+	a.registerObservedProcess(id, actualPID, watcher)
 	if tuningErr := a.rebalanceServerProcesses(); tuningErr != nil {
 		appendProcessTuningWarning(instance, tuningErr)
 	}
 	a.scheduleAutoRestart(instance)
-	runtime.EventsEmit(a.ctx, "server:started", id, cmd.Process.Pid)
+	scheduleCompatibilityBaseline(instance)
+	a.emit("server:started", id, actualPID)
 	a.notifyDiscord(id, "start", "服务器已启动", instance.Name)
 	if usesPalServerWrapper(launchPath) {
 		go func() {
@@ -263,7 +355,7 @@ func (a *App) StartServer(id string) error {
 			if tuningErr := a.rebalanceServerProcesses(); tuningErr != nil {
 				appendProcessTuningWarning(instance, tuningErr)
 			}
-			runtime.EventsEmit(a.ctx, "server:exited", id, fmt.Sprint(err))
+			a.emit("server:exited", id, fmt.Sprint(err))
 			a.handleServerExit(instance, err)
 		}()
 	}
@@ -271,13 +363,9 @@ func (a *App) StartServer(id string) error {
 }
 
 func readLogTail(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := readFileTail(path, 1600)
 	if err != nil || len(data) == 0 {
 		return ""
-	}
-	const maxTailBytes = 1600
-	if len(data) > maxTailBytes {
-		data = data[len(data)-maxTailBytes:]
 	}
 	return strings.TrimSpace(string(data))
 }
@@ -318,7 +406,7 @@ func (a *App) StopServer(id string) error {
 	// PalDefender may stop REST before the game process exits. Ask Windows to
 	// terminate the process tree without /F, then wait for the process to exit.
 	if status, statusErr := serverStatus(instance); statusErr == nil && status.Running {
-		_ = exec.Command("taskkill", "/PID", strconv.Itoa(status.PID), "/T").Run()
+		_ = terminateProcessTree(status.PID, false)
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			current, _ := serverStatus(instance)
@@ -359,7 +447,7 @@ func (a *App) ForceStopServer(id string) error {
 			time.Sleep(250 * time.Millisecond)
 		}
 	}
-	if err := exec.Command("taskkill", "/PID", strconv.Itoa(status.PID), "/T", "/F").Run(); err != nil {
+	if err := terminateProcessTree(status.PID, true); err != nil {
 		a.clearExpectedStop(id)
 		a.setGuardianSuppressed(id, false)
 		return err
@@ -436,9 +524,11 @@ func (a *App) scheduleAutoRestart(instance ServerInstance) {
 }
 
 func (a *App) handleServerExit(instance ServerInstance, waitErr error) {
+	a.clearObservedProcess(instance.ID)
 	if a.consumeExpectedStop(instance.ID) {
 		return
 	}
+	recordPluginCrash(instance, fmt.Sprint(waitErr))
 	a.notifyDiscord(instance.ID, "crash", "服务器异常退出", fmt.Sprint(waitErr))
 	if !instance.CrashRestart && !instance.GuardianEnabled {
 		return
@@ -450,28 +540,35 @@ func (a *App) handleServerExit(instance ServerInstance, waitErr error) {
 }
 
 func (a *App) InstallOrUpdateServer(id string) error {
+	if !a.tryBeginOperation(id, "install") {
+		return errors.New("server is busy")
+	}
+	defer a.endOperation(id)
+	return a.installOrUpdateServer(id)
+}
+
+func (a *App) installOrUpdateServer(id string) error {
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
 	}
+	if err := validateManagedServerRoot(instance.RootPath); err != nil {
+		return err
+	}
 	if instance.SteamCMDPath == "" {
 		base, _ := appDataDir()
-		instance.SteamCMDPath = filepath.Join(base, "runtime", "steamcmd", "steamcmd.exe")
+		instance.SteamCMDPath = defaultSteamCMDExecutable(base)
 	}
 	instance.SteamCMDPath = steamCMDExecutable(instance.SteamCMDPath)
 	if err := ensureSteamCMD(instance.SteamCMDPath, func(message string, percent int) {
-		runtime.EventsEmit(a.ctx, "install:progress", map[string]any{"message": message, "percent": percent})
+		a.emit("install:progress", map[string]any{"message": message, "percent": percent})
 	}); err != nil {
 		return err
 	}
-	return a.installOrUpdate(instance, func(progress steamCMDProgress) { runtime.EventsEmit(a.ctx, "install:progress", id, progress) })
-}
-
-func steamCMDExecutable(path string) string {
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		return filepath.Join(path, "steamcmd.exe")
+	if err := a.installOrUpdate(instance, func(progress steamCMDProgress) { a.emit("install:progress", id, progress) }); err != nil {
+		return err
 	}
-	return path
+	return validateInstalledServerExecutable(instance)
 }
 
 func (a *App) installOrUpdate(instance ServerInstance, onProgress func(steamCMDProgress)) error {
@@ -537,13 +634,5 @@ func (a *App) GetConsoleLog(id string, lines int) (string, error) {
 	if newest == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(newest)
-	if err != nil {
-		return "", err
-	}
-	parts := strings.Split(string(data), "\n")
-	if lines > 0 && len(parts) > lines {
-		parts = parts[len(parts)-lines:]
-	}
-	return strings.Join(parts, "\n"), nil
+	return readLogLines(newest, lines)
 }

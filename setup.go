@@ -8,16 +8,49 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 func buildManagedInstance(base, name string) ServerInstance {
 	return buildManagedInstanceAt(base, name, "")
+}
+
+func resolveManagedInstallRoot(base, requested, platform string) string {
+	requested = strings.TrimSpace(requested)
+	if strings.EqualFold(strings.TrimSpace(platform), "linux") && requested == "" {
+		return filepath.Join(base, "servers")
+	}
+	return requested
+}
+
+func nextAutomaticManagedServerRoot(base, name string, existing []ServerInstance) string {
+	directory := safeDirectoryName(name)
+	if directory == "" {
+		directory = "palworld-server"
+	}
+	serversRoot := filepath.Join(base, "servers")
+	used := make(map[string]bool, len(existing))
+	for _, instance := range existing {
+		used[strings.ToLower(filepath.Clean(instance.RootPath))] = true
+	}
+	for index := 1; index < 10000; index++ {
+		candidateName := directory
+		if index > 1 {
+			candidateName = fmt.Sprintf("%s-%d", directory, index)
+		}
+		candidate := filepath.Join(serversRoot, candidateName)
+		if used[strings.ToLower(filepath.Clean(candidate))] {
+			continue
+		}
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	return filepath.Join(serversRoot, fmt.Sprintf("%s-%d", directory, time.Now().UnixNano()))
 }
 
 func buildManagedInstanceAt(base, name, installRoot string) ServerInstance {
@@ -26,7 +59,7 @@ func buildManagedInstanceAt(base, name, installRoot string) ServerInstance {
 		name = "我的帕鲁服务器"
 	}
 	root := filepath.Clean(strings.TrimSpace(installRoot))
-	steamcmd := filepath.Join(base, "runtime", "steamcmd", "steamcmd.exe")
+	steamcmd := defaultSteamCMDExecutable(base)
 	if root == "." || root == "" {
 		directory := safeDirectoryName(name)
 		if directory == "" {
@@ -34,12 +67,12 @@ func buildManagedInstanceAt(base, name, installRoot string) ServerInstance {
 		}
 		root = filepath.Join(base, "servers", directory)
 	} else {
-		steamcmd = filepath.Join(filepath.Dir(root), "PalserverRuntime", "steamcmd", "steamcmd.exe")
+		steamcmd = isolatedSteamCMDExecutable(root)
 	}
 	return withDefaults(ServerInstance{
 		Name:            name,
 		RootPath:        root,
-		Executable:      filepath.Join(root, "PalServer.exe"),
+		Executable:      defaultServerExecutable(root),
 		SteamCMDPath:    steamcmd,
 		AdminPassword:   randomPassword(),
 		Community:       true,
@@ -143,15 +176,70 @@ func validateInstallDirectory(path string) error {
 	if filepath.Clean(filepath.VolumeName(path)+string(os.PathSeparator)) == path {
 		return errors.New("不能直接安装到磁盘根目录")
 	}
-	for _, character := range path {
-		if character > unicode.MaxASCII {
-			return errors.New("SteamCMD 安装目录不能包含中文，请选择例如 D:\\PalworldServers\\Server1 的英文目录")
-		}
+	if err := validatePlatformInstallPath(path); err != nil {
+		return err
 	}
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return errors.New("安装位置不是目录")
 	}
 	return nil
+}
+
+func pathWithinAllowedRoots(path string, roots []string) bool {
+	path = filepath.Clean(path)
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		relative, err := filepath.Rel(root, path)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolvePathThroughExistingAncestor(path string) (string, error) {
+	absolute, err := filepath.Abs(filepath.Clean(strings.TrimSpace(path)))
+	if err != nil {
+		return "", err
+	}
+	current := absolute
+	missing := make([]string, 0)
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", errors.New("cannot resolve an existing path ancestor")
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func resolvedPathWithinAllowedRoots(path string, roots []string) (bool, error) {
+	resolvedPath, err := resolvePathThroughExistingAncestor(path)
+	if err != nil {
+		return false, err
+	}
+	resolvedRoots := make([]string, 0, len(roots))
+	for _, root := range roots {
+		resolvedRoot, err := resolvePathThroughExistingAncestor(root)
+		if err != nil {
+			return false, err
+		}
+		resolvedRoots = append(resolvedRoots, resolvedRoot)
+	}
+	return pathWithinAllowedRoots(resolvedPath, resolvedRoots), nil
 }
 
 func randomPassword() string {
@@ -196,10 +284,24 @@ func (a *App) QuickSetup(name, installRoot string) (ServerInstance, error) {
 	if err != nil {
 		return ServerInstance{}, err
 	}
+	automaticLinuxRoot := runtime.GOOS == "linux" && strings.TrimSpace(installRoot) == ""
+	if automaticLinuxRoot {
+		installRoot = nextAutomaticManagedServerRoot(base, name, a.store.Snapshot().Instances)
+	}
 	if err := validateInstallDirectory(installRoot); err != nil {
 		return ServerInstance{}, err
 	}
+	environment, err := a.GetSetupEnvironment(installRoot)
+	if err != nil {
+		return ServerInstance{}, err
+	}
+	if !environment.CanInstall {
+		return ServerInstance{}, fmt.Errorf("当前环境不适合安装 Palworld 服务端：%s", strings.Join(environment.Warnings, "；"))
+	}
 	instance := buildManagedInstanceAt(base, name, installRoot)
+	if automaticLinuxRoot {
+		instance.SteamCMDPath = defaultSteamCMDExecutable(base)
+	}
 	instance = assignAvailablePorts(instance, a.store.Snapshot().Instances)
 	for _, existing := range a.store.Snapshot().Instances {
 		if strings.EqualFold(filepath.Clean(existing.RootPath), instance.RootPath) {
@@ -207,10 +309,10 @@ func (a *App) QuickSetup(name, installRoot string) (ServerInstance, error) {
 		}
 	}
 	if _, err := os.Stat(instance.Executable); err == nil {
-		return ServerInstance{}, errors.New("所选目录已经包含 PalServer.exe，请使用“导入已有服务器”")
+		return ServerInstance{}, errors.New("所选目录已经包含帕鲁服务器程序，请使用“导入已有服务器”")
 	}
 	progress := func(message string, percent int) {
-		runtime.EventsEmit(a.ctx, "setup:progress", map[string]any{"message": message, "percent": percent})
+		a.emit("setup:progress", map[string]any{"message": message, "percent": percent})
 	}
 	progress("正在准备安装目录", 3)
 	if err := os.MkdirAll(instance.RootPath, 0o755); err != nil {
@@ -229,17 +331,22 @@ func (a *App) QuickSetup(name, installRoot string) (ServerInstance, error) {
 	}); err != nil {
 		return ServerInstance{}, err
 	}
+	if err := validateInstalledServerExecutable(instance); err != nil {
+		return ServerInstance{}, err
+	}
 	progress("正在生成服务器配置", 85)
 	if err := writeManagedWorldSettings(instance); err != nil {
 		return ServerInstance{}, err
 	}
-	progress("正在安装 PalDefender", 90)
-	installResult, installErr := installLatestExtensionForInstance(instance, "paldefender", releaseDownloadClient(), extensionReleaseSourceFor)
-	if installErr != nil {
-		if installResult.Pending {
-			progress("PalDefender 已下载但安装失败，将在首次启动前重试", 95)
-		} else {
-			progress("PalDefender 自动安装失败，可稍后在插件页重试", 95)
+	if autoInstallCoreExtensionID() == "paldefender" {
+		progress("正在安装 PalDefender", 90)
+		installResult, installErr := installLatestExtensionForInstance(instance, "paldefender", releaseDownloadClient(), extensionReleaseSourceFor)
+		if installErr != nil {
+			if installResult.Pending {
+				progress("PalDefender 已下载但安装失败，将在首次启动前重试", 95)
+			} else {
+				progress("PalDefender 自动安装失败，可稍后在插件页重试", 95)
+			}
 		}
 	}
 	stored, err := a.store.Upsert(instance)
@@ -254,23 +361,26 @@ var settingValuePattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_]*)=("[^"]*"|[
 
 func (a *App) ImportExistingServer(root string) (ServerInstance, error) {
 	root = filepath.Clean(strings.TrimSpace(root))
-	if root == "." || root == "" {
+	if root == "." || root == "" || !filepath.IsAbs(root) {
 		return ServerInstance{}, errors.New("server directory is required")
 	}
-	executable := filepath.Join(root, "PalServer.exe")
+	if err := validateManagedServerRoot(root); err != nil {
+		return ServerInstance{}, err
+	}
+	executable := defaultServerExecutable(root)
 	if _, err := os.Stat(executable); err != nil {
-		return ServerInstance{}, errors.New("PalServer.exe was not found in the selected directory")
+		return ServerInstance{}, errors.New("Palworld server executable was not found in the selected directory")
 	}
 	base, _ := appDataDir()
 	instance := withDefaults(ServerInstance{
 		Name:            filepath.Base(root),
 		RootPath:        root,
 		Executable:      executable,
-		SteamCMDPath:    filepath.Join(base, "runtime", "steamcmd", "steamcmd.exe"),
+		SteamCMDPath:    defaultSteamCMDExecutable(base),
 		Community:       true,
 		PerformanceMode: true,
 	})
-	if data, err := os.ReadFile(filepath.Join(root, "Pal", "Saved", "Config", "WindowsServer", "PalWorldSettings.ini")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(root, "Pal", "Saved", "Config", serverConfigDirectoryName(), "PalWorldSettings.ini")); err == nil {
 		values := map[string]string{}
 		for _, match := range settingValuePattern.FindAllStringSubmatch(string(data), -1) {
 			values[match[1]] = strings.Trim(match[2], `"`)

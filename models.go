@@ -13,6 +13,8 @@ type ServerInstance struct {
 	RESTPort                 int    `json:"restPort"`
 	AdminPassword            string `json:"adminPassword"`
 	ServerPassword           string `json:"serverPassword"`
+	EncryptedAdminPassword   string `json:"encryptedAdminPassword,omitempty"`
+	EncryptedServerPassword  string `json:"encryptedServerPassword,omitempty"`
 	Community                bool   `json:"community"`
 	PerformanceMode          bool   `json:"performanceMode"`
 	LegacyPerformanceFlags   bool   `json:"legacyPerformanceFlags"`
@@ -21,6 +23,7 @@ type ServerInstance struct {
 	CPUAffinityMode          string `json:"cpuAffinityMode"`
 	IconID                   string `json:"iconId"`
 	AutoRestartHours         int    `json:"autoRestartHours"`
+	StartOnBoot              bool   `json:"startOnBoot"`
 	CrashRestart             bool   `json:"crashRestart"`
 	GuardianEnabled          bool   `json:"guardianEnabled"`
 	GuardianFailureThreshold int    `json:"guardianFailureThreshold"`
@@ -75,6 +78,7 @@ type AppConfig struct {
 	FrpConfigs       []FrpConfig            `json:"frpConfigs"`
 	SelectedID       string                 `json:"selectedId"`
 	Language         string                 `json:"language"`
+	StartupWarnings  []string               `json:"startupWarnings,omitempty"`
 }
 
 type DiscordWebhookConfig struct {
@@ -200,6 +204,9 @@ type MaintenanceTask struct {
 type RuntimeStatus struct {
 	Running       bool    `json:"running"`
 	PID           int     `json:"pid"`
+	State         string  `json:"state"`
+	StateMessage  string  `json:"stateMessage"`
+	CheckedAt     int64   `json:"checkedAt"`
 	Version       string  `json:"version"`
 	Players       int     `json:"players"`
 	MaxPlayers    int     `json:"maxPlayers"`
@@ -214,11 +221,56 @@ type RuntimeStatus struct {
 	RCONAvailable bool    `json:"rconAvailable"`
 }
 
+type CapabilityStatus struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Category  string `json:"category"`
+	Available bool   `json:"available"`
+	State     string `json:"state"`
+	Detail    string `json:"detail"`
+	Reason    string `json:"reason"`
+}
+
+type ServerCapabilityReport struct {
+	ServerID           string             `json:"serverId"`
+	Platform           string             `json:"platform"`
+	CheckedAt          int64              `json:"checkedAt"`
+	Running            bool               `json:"running"`
+	ServerVersion      string             `json:"serverVersion"`
+	PalDefenderVersion string             `json:"palDefenderVersion"`
+	UE4SSVersion       string             `json:"ue4ssVersion"`
+	Capabilities       []CapabilityStatus `json:"capabilities"`
+}
+
 type HostResources struct {
 	CPUPercent    float64 `json:"cpuPercent"`
 	MemoryPercent float64 `json:"memoryPercent"`
 	MemoryUsedMB  float64 `json:"memoryUsedMb"`
 	MemoryTotalMB float64 `json:"memoryTotalMb"`
+}
+
+type SetupEnvironment struct {
+	Platform          string   `json:"platform"`
+	CPUCores          int      `json:"cpuCores"`
+	MemoryTotalMB     float64  `json:"memoryTotalMb"`
+	DiskFreeBytes     int64    `json:"diskFreeBytes"`
+	PathValid         bool     `json:"pathValid"`
+	PathMessage       string   `json:"pathMessage"`
+	CPURecommended    bool     `json:"cpuRecommended"`
+	MemoryMinimum     bool     `json:"memoryMinimum"`
+	MemoryRecommended bool     `json:"memoryRecommended"`
+	DiskMinimum       bool     `json:"diskMinimum"`
+	CanInstall        bool     `json:"canInstall"`
+	Warnings          []string `json:"warnings"`
+}
+
+type AgentAuditEntry struct {
+	Time       string `json:"time"`
+	Method     string `json:"method"`
+	ServerID   string `json:"serverId"`
+	RemoteIP   string `json:"remoteIp"`
+	Successful bool   `json:"successful"`
+	Error      string `json:"error"`
 }
 
 type Player struct {
@@ -244,6 +296,8 @@ type BackupEntry struct {
 type ExtensionStatus struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
+	Supported          bool   `json:"supported"`
+	UnsupportedReason  string `json:"unsupportedReason"`
 	Installed          bool   `json:"installed"`
 	Enabled            bool   `json:"enabled"`
 	Version            string `json:"version"`
@@ -264,6 +318,36 @@ type ExtensionUpdateResult struct {
 	Version     string `json:"version"`
 	Pending     bool   `json:"pending"`
 	Message     string `json:"message"`
+}
+
+type PluginCompatibilityIssue struct {
+	Severity  string `json:"severity"`
+	Component string `json:"component"`
+	Title     string `json:"title"`
+	Detail    string `json:"detail"`
+	Action    string `json:"action"`
+}
+
+type PluginCompatibilityReport struct {
+	ServerID            string                     `json:"serverId"`
+	CheckedAt           int64                      `json:"checkedAt"`
+	GameBuildID         string                     `json:"gameBuildId"`
+	BaselineBuildID     string                     `json:"baselineBuildId"`
+	PalDefenderVersion  string                     `json:"palDefenderVersion"`
+	UE4SSVersion        string                     `json:"ue4ssVersion"`
+	Compatible          bool                       `json:"compatible"`
+	SafeModeRecommended bool                       `json:"safeModeRecommended"`
+	LastCrashSummary    string                     `json:"lastCrashSummary"`
+	Issues              []PluginCompatibilityIssue `json:"issues"`
+}
+
+type SafeModeStatus struct {
+	Active                  bool  `json:"active"`
+	ActivatedAt             int64 `json:"activatedAt"`
+	PalDefenderWasEnabled   bool  `json:"palDefenderWasEnabled"`
+	UE4SSWasEnabled         bool  `json:"ue4ssWasEnabled"`
+	PalDefenderCurrentlyOff bool  `json:"palDefenderCurrentlyOff"`
+	UE4SSCurrentlyOff       bool  `json:"ue4ssCurrentlyOff"`
 }
 
 type ModEntry struct {

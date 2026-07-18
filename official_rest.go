@@ -192,7 +192,7 @@ func (a *App) GetServerInfo(id string) (ServerInfo, error) {
 	if err != nil {
 		return ServerInfo{}, err
 	}
-	return getOfficialServerInfo(instance)
+	return a.cachedServerInfo(instance)
 }
 
 func (a *App) GetServerMetrics(id string) (ServerMetrics, error) {
@@ -200,7 +200,7 @@ func (a *App) GetServerMetrics(id string) (ServerMetrics, error) {
 	if err != nil {
 		return ServerMetrics{}, err
 	}
-	return getOfficialServerMetrics(instance)
+	return a.cachedServerMetrics(instance)
 }
 
 func (a *App) GetServerSettings(id string) (ServerSettings, error) {
@@ -208,7 +208,7 @@ func (a *App) GetServerSettings(id string) (ServerSettings, error) {
 	if err != nil {
 		return ServerSettings{}, err
 	}
-	return getOfficialServerSettings(instance)
+	return a.cachedServerSettings(instance)
 }
 
 func (a *App) GetWorldSnapshot(id string) (WorldSnapshot, error) {
@@ -216,7 +216,7 @@ func (a *App) GetWorldSnapshot(id string) (WorldSnapshot, error) {
 	if err != nil {
 		return WorldSnapshot{}, err
 	}
-	return getOfficialWorldSnapshot(instance)
+	return a.cachedWorldSnapshot(instance)
 }
 
 func (a *App) ShutdownServer(id string, waitTime int, message string) error {

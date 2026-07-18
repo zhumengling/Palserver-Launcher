@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build web console
+        run: |
+          npm ci --prefix frontend
+          npm test --prefix frontend
+          npm run build --prefix frontend
+
+      - name: Test Linux platform and web API
+        run: |
+          go test -count=1 ./...
+          go vet ./...
+          bash -n deploy/linux/install.sh deploy/linux/install-online.sh deploy/linux/uninstall.sh deploy/linux/smoke-test.sh
+          go build -tags webpreview -o build/bin/palserver-web-preview .
+          CGO_ENABLED=0 go build -trimpath -o build/bin/pal-agent-linux-amd64 .
+          bash deploy/linux/smoke-test.sh build/bin/pal-agent-linux-amd64
+          go run ./cmd/package-linux
+          mkdir -p build/package-check
+          tar -xzf build/palserver-agent-linux-amd64.tar.gz -C build/package-check
+          test -x build/package-check/pal-agent
+          test -x build/package-check/install.sh
+          test -x build/package-check/uninstall.sh
+          test -f build/package-check/palserver-agent.service
+          test -f build/package-check/README-linux.md
+          (cd build && sha256sum -c palserver-agent-linux-amd64.tar.gz.sha256)
+
+      - name: Detect concurrent state races
+        run: |
+          CGO_ENABLED=1 go test -race -count=1 ./...
+          CGO_ENABLED=1 go test -race -count=1 -tags webpreview ./...
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: palserver-agent-linux-amd64
+          path: |
+            build/palserver-agent-linux-amd64.tar.gz
+            build/palserver-agent-linux-amd64.tar.gz.sha256
+          if-no-files-found: error
+
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Verify source
+        shell: pwsh
+        run: |
+          go test -count=1 ./...
+          go vet ./...
+          npm test --prefix frontend
+          npm run build --prefix frontend
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build Windows amd64 launcher
+        shell: pwsh
+        run: |
+          go build -tags webpreview -o build/bin/palserver-web-preview.exe .
+          wails build -platform windows/amd64 -trimpath -m -o palserver-launcher-windows-amd64.exe
+
+      - name: Verify release asset
+        shell: pwsh
+        run: |
+          $asset = 'build/bin/palserver-launcher-windows-amd64.exe'
+          if (-not (Test-Path -LiteralPath $asset)) { throw "Missing $asset" }
+          if ((Get-Item -LiteralPath $asset).Length -lt 1MB) { throw 'Launcher asset is unexpectedly small' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $asset
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: palserver-launcher-windows-amd64
+          path: build/bin/palserver-launcher-windows-amd64.exe
+          if-no-files-found: error

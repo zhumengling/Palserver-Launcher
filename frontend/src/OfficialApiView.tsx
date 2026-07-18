@@ -10,7 +10,7 @@ import {
   Square,
   Users,
 } from "lucide-react";
-import * as API from "../wailsjs/go/main/App";
+import API from "./platformApi";
 import { main } from "../wailsjs/go/models";
 
 type Props = {
@@ -156,7 +156,7 @@ export default function OfficialApiView({
         <div className="panel-heading">
           <div>
             <h2>官方 REST API</h2>
-            <p>Palworld 1.0 结构化接口 · 每 5 秒自动刷新</p>
+            <p>Palworld 1.0 结构化接口 · 状态每 5 秒刷新，世界快照约 15 秒采样</p>
           </div>
           <div className="toolbar">
             <span

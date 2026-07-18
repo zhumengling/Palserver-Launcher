@@ -98,7 +98,7 @@ func playerPresenceTransitions(before, after []PlayerHistoryEntry) (joined, left
 
 func (a *App) pollPlayerHistory(now time.Time) {
 	for _, instance := range a.store.Snapshot().Instances {
-		status, _ := serverStatus(instance)
+		status, _ := a.GetStatus(instance.ID)
 		if !status.Running {
 			continue
 		}
@@ -131,7 +131,9 @@ func (a *App) pollPlayerHistory(now time.Time) {
 		for _, player := range players {
 			entry := byID[playerIdentity(player)]
 			if shouldKickForWhitelist(true, entry) {
-				_, _ = restPost(instance, "/kick", map[string]any{"userid": player.UserID, "message": "Whitelist only"})
+				if _, kickErr := restPost(instance, "/kick", map[string]any{"userid": player.UserID, "message": "Whitelist only"}); kickErr == nil {
+					a.invalidateOfficialCache(instance.ID, "players")
+				}
 			}
 		}
 	}
@@ -160,6 +162,7 @@ func (a *App) BanHistoricalPlayer(serverID, userID string) error {
 	status, _ := serverStatus(instance)
 	if status.Running {
 		if _, restErr := restPost(instance, "/ban", map[string]any{"userid": userID, "message": "Banned by Palserver Launcher"}); restErr == nil {
+			a.invalidateOfficialCache(serverID, "players")
 			_, _ = a.store.UpdatePlayerHistory(serverID, userID, func(entry *PlayerHistoryEntry) { entry.Banned = true })
 			return nil
 		}

@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 var verifiedServerModCatalog = []ServerModCatalogEntry{
@@ -52,8 +50,7 @@ func (a *App) OpenNexusModPage(catalogID string) error {
 	if err != nil {
 		return err
 	}
-	runtime.BrowserOpenURL(a.ctx, url)
-	return nil
+	return openExternalURLPlatform(a, url)
 }
 
 func catalogModInstallState(modsRoot, folderName string) (installed, enabled bool, installedPath string) {
@@ -127,11 +124,18 @@ func setUE4SSModEnabled(modsRoot, folderName string, enabled bool) error {
 }
 
 func (a *App) InstallServerModArchive(serverID, catalogID, archivePath string) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
+	if !a.tryBeginOperation(serverID, "mods") {
+		return errors.New("server is busy")
+	}
+	defer a.endOperation(serverID)
 	instance, err := a.store.Find(serverID)
 	if err != nil {
 		return err
 	}
-	status, _ := serverStatus(instance)
+	status, _ := a.GetStatus(instance.ID)
 	if status.Running {
 		return errors.New("请先停止服务器再安装模组")
 	}
@@ -190,6 +194,9 @@ func (a *App) InstallServerModArchive(serverID, catalogID, archivePath string) e
 }
 
 func (a *App) UninstallServerMod(serverID, catalogID string) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
 	instance, err := a.store.Find(serverID)
 	if err != nil {
 		return err

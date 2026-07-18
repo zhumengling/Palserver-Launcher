@@ -89,6 +89,19 @@ func TestSelectLauncherReleaseAssetAcceptsCanonicalWindowsExecutable(t *testing.
 	}
 }
 
+func TestSelectLauncherReleaseAssetAcceptsAutomatedWorkflowName(t *testing.T) {
+	release := githubRelease{TagName: "v0.2.0", Assets: []githubReleaseAsset{{
+		Name: "palserver-launcher-windows-amd64.exe", BrowserDownloadURL: "https://example.test/workflow.exe", Digest: "sha256:abc", Size: 42,
+	}}}
+	asset, err := selectLauncherReleaseAsset(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset.Name != "palserver-launcher-windows-amd64.exe" {
+		t.Fatalf("selected asset = %#v", asset)
+	}
+}
+
 func TestVerifyLauncherSHA256File(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "launcher.exe")
 	content := []byte("verified launcher")

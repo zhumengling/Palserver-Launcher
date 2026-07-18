@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -21,7 +20,7 @@ var ErrSaveDirectoryNotFound = errors.New("save directory not found")
 func missingSaveDirectoryError() error { return ErrSaveDirectoryNotFound }
 
 func worldSettingsPath(instance ServerInstance) (string, error) {
-	return safeJoin(instance.RootPath, "Pal", "Saved", "Config", "WindowsServer", "PalWorldSettings.ini")
+	return safeJoin(instance.RootPath, "Pal", "Saved", "Config", serverConfigDirectoryName(), "PalWorldSettings.ini")
 }
 
 func (a *App) ReadWorldSettings(id string) (string, error) {
@@ -49,7 +48,11 @@ func (a *App) WriteWorldSettings(id, content string) error {
 	if status.Running {
 		return errors.New("stop the server before changing world settings")
 	}
-	return writeWorldSettingsFile(instance, content)
+	if err := writeWorldSettingsFile(instance, content); err != nil {
+		return err
+	}
+	a.invalidateOfficialCache(id, "settings")
+	return nil
 }
 
 func writeWorldSettingsFile(instance ServerInstance, content string) error {
@@ -64,20 +67,6 @@ func writeWorldSettingsFile(instance ServerInstance, content string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(content), 0o600)
-}
-
-func appDataDir() (string, error) {
-	base := os.Getenv("LOCALAPPDATA")
-	if base == "" {
-		return "", errors.New("LOCALAPPDATA is not available")
-	}
-	dir := filepath.Join(base, "palserver-launcher")
-	return dir, os.MkdirAll(dir, 0o755)
-}
-
-func copyTreeEntryIsReparsePoint(info os.FileInfo) bool {
-	attributes, ok := info.Sys().(*syscall.Win32FileAttributeData)
-	return ok && attributes.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 func copyTree(source, destination string) error {
@@ -187,6 +176,14 @@ func claimBackupDestination(root string, now time.Time) (string, error) {
 }
 
 func (a *App) CreateBackup(id string) (BackupEntry, error) {
+	if !a.tryBeginOperation(id, "backup") {
+		return BackupEntry{}, errors.New("server is busy")
+	}
+	defer a.endOperation(id)
+	return a.createBackup(id)
+}
+
+func (a *App) createBackup(id string) (BackupEntry, error) {
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return BackupEntry{}, err
@@ -216,9 +213,14 @@ func (a *App) CreateBackup(id string) (BackupEntry, error) {
 	if err != nil {
 		return BackupEntry{}, err
 	}
-	if err := copyTree(source, destination); err != nil {
+	manifestFiles, err := copyBackupTree(source, destination)
+	if err != nil {
 		_ = os.RemoveAll(destination)
 		return BackupEntry{}, err
+	}
+	if err := writeBackupManifest(destination, id, now.UnixMilli(), manifestFiles); err != nil {
+		_ = os.RemoveAll(destination)
+		return BackupEntry{}, fmt.Errorf("write backup integrity manifest: %w", err)
 	}
 	entry := BackupEntry{Name: filepath.Base(destination), Path: destination, CreatedAt: now.UnixMilli(), Size: dirSize(destination)}
 	_ = a.PruneBackups(id)
@@ -227,6 +229,10 @@ func (a *App) CreateBackup(id string) (BackupEntry, error) {
 }
 
 func (a *App) RestoreBackup(id, backupPath string) error {
+	if !a.tryBeginOperation(id, "restore") {
+		return errors.New("server is busy")
+	}
+	defer a.endOperation(id)
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -237,10 +243,24 @@ func (a *App) RestoreBackup(id, backupPath string) error {
 	}
 	base, _ := appDataDir()
 	allowedRoot := filepath.Join(base, "backups", id)
+	// The Linux web UI uses the backup directory name as an opaque identifier;
+	// it never receives or submits an absolute path from the Agent host.
+	if !filepath.IsAbs(backupPath) {
+		name := filepath.Clean(strings.TrimSpace(backupPath))
+		if name == "." || name == ".." || filepath.Base(name) != name {
+			return errors.New("invalid backup name")
+		}
+		backupPath = filepath.Join(allowedRoot, name)
+	}
 	backupAbs, _ := filepath.Abs(backupPath)
 	rel, relErr := filepath.Rel(allowedRoot, backupAbs)
 	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return errors.New("invalid backup path")
+	}
+	if manifest, found, verifyErr := verifyBackupManifest(backupAbs); verifyErr != nil {
+		return fmt.Errorf("backup integrity check failed: %w", verifyErr)
+	} else if found && manifest.ServerID != "" && manifest.ServerID != id {
+		return errors.New("backup belongs to a different server")
 	}
 	destination, err := safeJoin(instance.RootPath, "Pal", "Saved", "SaveGames")
 	if err != nil {
@@ -275,6 +295,9 @@ func restoreBackupTree(source, destination string) error {
 	if err := copyTree(source, staging); err != nil {
 		return err
 	}
+	if _, _, err := verifyBackupManifest(staging); err != nil {
+		return fmt.Errorf("staged backup integrity check failed: %w", err)
+	}
 
 	previous := ""
 	if _, err := os.Stat(destination); err == nil {
@@ -301,7 +324,7 @@ func restoreBackupTree(source, destination string) error {
 }
 
 func win64Path(instance ServerInstance) string {
-	return filepath.Join(instance.RootPath, "Pal", "Binaries", "Win64")
+	return serverBinaryRoot(instance)
 }
 
 // ue4ssModsRoot supports both the current Palworld server layout used by
@@ -351,6 +374,10 @@ func (a *App) ListExtensions(id string) ([]ExtensionStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	return listExtensionStatuses(instance), nil
+}
+
+func listExtensionStatuses(instance ServerInstance) []ExtensionStatus {
 	base := win64Path(instance)
 	extensions := []struct{ id, name, version string }{
 		{"paldefender", "PalDefender", "palguard.version.txt"},
@@ -371,7 +398,7 @@ func (a *App) ListExtensions(id string) ([]ExtensionStatus, error) {
 		}
 		versionData, _ := os.ReadFile(filepath.Join(base, extension.version))
 		status := ExtensionStatus{
-			ID: extension.id, Name: extension.name, Installed: installed, Enabled: enabled,
+			ID: extension.id, Name: extension.name, Supported: coreExtensionSupported(extension.id), UnsupportedReason: coreExtensionUnsupportedReason(extension.id), Installed: installed, Enabled: enabled,
 			Version: strings.TrimSpace(string(versionData)), Path: actualPath,
 		}
 		if manifestPath, pathErr := extensionInstalledManifestPath(instance, extension.id); pathErr == nil {
@@ -391,7 +418,14 @@ func (a *App) ListExtensions(id string) ([]ExtensionStatus, error) {
 		}
 		result = append(result, status)
 	}
-	return result, nil
+	return result
+}
+
+func extensionStatusSupported(status ExtensionStatus) bool {
+	if status.Supported {
+		return true
+	}
+	return status.UnsupportedReason == "" && coreExtensionSupported(status.ID)
 }
 
 func renameExtensionStateFileChanged(from, to string) (bool, error) {
@@ -449,6 +483,9 @@ func (a *App) ToggleExtension(id, extensionID string, enabled bool) error {
 }
 
 func (a *App) toggleExtensionWith(id, extensionID string, enabled bool, statusFor func(ServerInstance) (RuntimeStatus, error)) error {
+	if !coreExtensionSupported(extensionID) {
+		return errors.New(coreExtensionUnsupportedReason(extensionID))
+	}
 	a.serverStartMu.Lock()
 	defer a.serverStartMu.Unlock()
 	a.extensionStageMu.Lock()
@@ -687,9 +724,23 @@ func (a *App) ListMods(id string) ([]ModEntry, error) {
 }
 
 func (a *App) ImportMods(id, kind string, sources []string) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
+	if !a.tryBeginOperation(id, "mods") {
+		return errors.New("server is busy")
+	}
+	defer a.endOperation(id)
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
+	}
+	status, err := serverStatus(instance)
+	if err != nil {
+		return err
+	}
+	if status.Running {
+		return errors.New("stop the server before importing mods")
 	}
 	root, ok := modRoots(instance)[kind]
 	if !ok {
@@ -739,6 +790,9 @@ func copyFile(source, destination string) error {
 }
 
 func (a *App) ToggleMod(id, path string, enabled bool) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -763,6 +817,9 @@ func (a *App) ToggleMod(id, path string, enabled bool) error {
 }
 
 func (a *App) DeleteMod(id, path string) error {
+	if !serverModsSupported() {
+		return errors.New(serverModsUnsupportedReason())
+	}
 	instance, err := a.store.Find(id)
 	if err != nil {
 		return err
@@ -787,6 +844,11 @@ func (a *App) RunDiagnostics(id string) ([]DiagnosticResult, error) {
 		return nil, err
 	}
 	results := []DiagnosticResult{}
+	if rootErr := validateManagedServerRoot(instance.RootPath); rootErr != nil {
+		results = append(results, DiagnosticResult{"服务器目录权限边界", "error", rootErr.Error()})
+	} else {
+		results = append(results, DiagnosticResult{"服务器目录权限边界", "ok", "服务器目录位于当前 Agent 允许管理的范围内"})
+	}
 	if _, err := os.Stat(instance.Executable); err == nil {
 		results = append(results, DiagnosticResult{"服务器程序", "ok", instance.Executable})
 	} else {
@@ -802,10 +864,13 @@ func (a *App) RunDiagnostics(id string) ([]DiagnosticResult, error) {
 	extensions, _ := a.ListExtensions(id)
 	for _, extension := range extensions {
 		status := "warn"
-		if extension.Installed && extension.Enabled {
+		detail := fallback(extension.Version, "版本未知")
+		if !extensionStatusSupported(extension) {
+			status, detail = "info", extension.UnsupportedReason
+		} else if extension.Installed && extension.Enabled {
 			status = "ok"
 		}
-		results = append(results, DiagnosticResult{extension.Name + " 插件", status, fallback(extension.Version, "版本未知")})
+		results = append(results, DiagnosticResult{extension.Name + " 插件", status, detail})
 	}
 	mods, _ := a.ListMods(id)
 	userMods := 0
@@ -849,7 +914,7 @@ func (a *App) RunDiagnostics(id string) ([]DiagnosticResult, error) {
 		if allowed {
 			status, detail = "ok", fmt.Sprintf("检测到允许 UDP %d 的入站防火墙规则", instance.PublicPort)
 		}
-		results = append(results, DiagnosticResult{"Windows 防火墙", status, detail})
+		results = append(results, DiagnosticResult{firewallDiagnosticName(), status, detail})
 	}
 	if instance.Community && instance.PublicIP != "" {
 		results = append(results, DiagnosticResult{"社区服本地回环", "info", "若同一局域网无法通过公网地址连接，请检查路由器是否支持 Hairpin NAT"})
@@ -871,26 +936,4 @@ func (a *App) RunDiagnostics(id string) ([]DiagnosticResult, error) {
 	}
 	results = append(results, DiagnosticResult{"FRP 转发", "info", "游戏连接使用 UDP 端口；请确认公网 UDP 转发到本机游戏端口，TCP 8211 不是客户端连接端口。"})
 	return results, nil
-}
-
-func serverStorageMediaType(root string) (string, error) {
-	volume := strings.TrimSuffix(filepath.VolumeName(filepath.Clean(root)), `\`)
-	if volume == "" {
-		return "", errors.New("server drive was not found")
-	}
-	query := `$letter='` + strings.TrimSuffix(volume, `:`) + `'; $disk=Get-Partition -DriveLetter $letter -ErrorAction Stop | Get-Disk; ($disk.BusType.ToString() + ' / ' + $disk.MediaType.ToString())`
-	output, err := newHiddenPowerShell(query).Output()
-	return strings.TrimSpace(string(output)), err
-}
-
-func udpPortListening(port int) (bool, error) {
-	query := fmt.Sprintf(`[bool](Get-NetUDPEndpoint -LocalPort %d -ErrorAction SilentlyContinue | Select-Object -First 1) | ConvertTo-Json -Compress`, port)
-	output, err := newHiddenPowerShell(query).Output()
-	return strings.EqualFold(strings.TrimSpace(string(output)), "true"), err
-}
-
-func firewallAllowsUDP(port int) (bool, error) {
-	query := fmt.Sprintf(`$rules=Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction Stop; [bool]($rules | Get-NetFirewallPortFilter | Where-Object { $_.Protocol -eq 'UDP' -and ($_.LocalPort -eq 'Any' -or $_.LocalPort -eq '%d') } | Select-Object -First 1) | ConvertTo-Json -Compress`, port)
-	output, err := newHiddenPowerShell(query).Output()
-	return strings.EqualFold(strings.TrimSpace(string(output)), "true"), err
 }

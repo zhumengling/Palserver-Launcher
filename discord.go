@@ -9,8 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 func validateDiscordWebhook(value string) error {
@@ -92,7 +90,7 @@ func (a *App) TestDiscordWebhook(serverID string) error {
 func (a *App) notifyDiscord(serverID, event, title, description string) {
 	go func() {
 		if err := a.sendDiscord(serverID, event, title, description); err != nil && a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "discord:error", serverID, event, err.Error())
+			a.emit("discord:error", serverID, event, err.Error())
 		}
 	}()
 }
