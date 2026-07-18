@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestBuildServerCapabilityReportSeparatesOfficialAndPluginActions(t *testing.T) {
 	instance := ServerInstance{ID: "server-1"}
@@ -10,7 +13,11 @@ func TestBuildServerCapabilityReportSeparatesOfficialAndPluginActions(t *testing
 		{ID: "ue4ss", Installed: true, Enabled: false, Version: "experimental"},
 	}
 	report := buildServerCapabilityReport(instance, status, extensions, true)
-	for _, id := range []string{"process", "rest", "rcon", "player-list", "player-moderation", "player-rewards", "custom-pal"} {
+	expected := []string{"process", "rest", "rcon", "player-list", "player-moderation"}
+	if runtime.GOOS != "linux" {
+		expected = append(expected, "player-rewards", "custom-pal")
+	}
+	for _, id := range expected {
 		if item := findCapability(report, id); !item.Available {
 			t.Errorf("capability %s unavailable: %#v", id, item)
 		}
