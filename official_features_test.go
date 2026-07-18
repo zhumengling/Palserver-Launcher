@@ -64,6 +64,39 @@ func TestOfficialRESTTypedResponses(t *testing.T) {
 	}
 }
 
+func TestOfficialRESTRecoversMissingAdminPasswordFromWorldSettings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		username, password, authenticated := request.BasicAuth()
+		if !authenticated || username != "admin" || password != "world-settings-secret" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"version":"v1.0.0"}`))
+	}))
+	defer server.Close()
+	_, portText, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(portText)
+	instance := ServerInstance{RootPath: t.TempDir(), RESTPort: port}
+	settingsPath, err := worldSettingsPath(instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `[/Script/Pal.PalGameWorldSettings]
+OptionSettings=(AdminPassword="world-settings-secret",ServerPassword="")`
+	if err := os.WriteFile(settingsPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := getOfficialServerInfo(instance); err != nil {
+		t.Fatalf("REST fallback authentication failed: %v", err)
+	}
+}
+
 func TestOfficialWorldSnapshotTreatsDisabledGameDataAPIAsUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/api/game-data" {

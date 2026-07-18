@@ -2,7 +2,7 @@
 
 Palworld 专用服务器管理器。Windows 使用 Wails 2 桌面端，Linux 使用 Go 后台 Agent 和同一套 React 网页控制台。
 
-当前版本：**0.1.5**
+当前版本：**0.1.6**
 
 ## 主要功能
 

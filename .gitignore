@@ -10,7 +10,6 @@ build/*.tar.gz
 build/*.tar.gz.sha256
 build/webpreview-smoke-data/
 frontend/dist/
-frontend/wailsjs/
 frontend/package.json.md5
 tmp/
 .cache/

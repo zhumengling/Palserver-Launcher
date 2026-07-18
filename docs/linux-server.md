@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/zhumengling/Palserver-Launcher/main
 脚本默认安装最新 Release。需要固定版本时可以这样执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zhumengling/Palserver-Launcher/main/deploy/linux/install-online.sh | sudo env PALSERVER_VERSION=0.1.5 bash
+curl -fsSL https://raw.githubusercontent.com/zhumengling/Palserver-Launcher/main/deploy/linux/install-online.sh | sudo env PALSERVER_VERSION=0.1.6 bash
 ```
 
 如果仓库使用私有镜像或内部 Release，可设置 `PALSERVER_REPOSITORY`、`PALSERVER_VERSION`、`PALSERVER_RELEASE_URL` 和 `PALSERVER_CHECKSUM_URL` 覆盖下载地址。安装脚本只接受带 SHA-256 校验文件的 Release，校验失败不会替换现有 Agent。

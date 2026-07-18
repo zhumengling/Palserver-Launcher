@@ -104,6 +104,14 @@ func (a *App) SaveInstance(instance ServerInstance) (ServerInstance, error) {
 			instance.SteamCMDPath = current.SteamCMDPath
 		}
 	}
+	if instance.AdminPassword == "" {
+		// An empty administrator password usually means an older config lost its
+		// credential. Keep ServerPassword untouched so the user can still clear
+		// the optional join password explicitly in the editor.
+		serverPassword := instance.ServerPassword
+		recoverInstancePasswordsFromWorldSettings(&instance)
+		instance.ServerPassword = serverPassword
+	}
 	if instance.Name == "" || instance.RootPath == "" {
 		return ServerInstance{}, errors.New("name and root path are required")
 	}

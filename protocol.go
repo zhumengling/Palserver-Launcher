@@ -49,6 +49,9 @@ func restRequest(instance ServerInstance, method, endpoint string, body any) (ma
 }
 
 func restRequestBytes(instance ServerInstance, method, endpoint string, body any) ([]byte, error) {
+	if instance.AdminPassword == "" {
+		recoverInstancePasswordsFromWorldSettings(&instance)
+	}
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -109,6 +112,9 @@ func readRCONPacket(conn net.Conn) (int32, int32, string, error) {
 }
 
 func openAuthenticatedRCON(instance ServerInstance, timeout time.Duration) (net.Conn, error) {
+	if instance.AdminPassword == "" {
+		recoverInstancePasswordsFromWorldSettings(&instance)
+	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}

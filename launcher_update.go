@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const LauncherVersion = "0.1.5"
+const LauncherVersion = "0.1.6"
 
 const launcherReleaseEndpoint = "https://api.github.com/repos/zhumengling/Palserver-Launcher/releases/latest"
 

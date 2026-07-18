@@ -59,7 +59,7 @@ function App() {
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupProgress, setSetupProgress] = useState({ message: '准备开始', percent: 0 });
-  const [launcherVersion, setLauncherVersion] = useState('v0.1.5');
+  const [launcherVersion, setLauncherVersion] = useState('v0.1.6');
   const [launcherUpdate, setLauncherUpdate] = useState<main.LauncherUpdateInfo | null>(null);
   const [launcherUpdateOpen, setLauncherUpdateOpen] = useState(false);
   const [launcherUpdateBusy, setLauncherUpdateBusy] = useState(false);

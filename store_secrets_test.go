@@ -86,6 +86,51 @@ func TestStoreMigratesLegacyPlaintextPasswords(t *testing.T) {
 	}
 }
 
+func TestStoreRecoversMissingPasswordsFromWorldSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PALSERVER_LAUNCHER_HOME", home)
+	root := filepath.Join(home, "server")
+	instance := ServerInstance{ID: "srv-recover-secret", Name: "恢复配置", RootPath: root}
+	settingsPath, err := worldSettingsPath(instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `[/Script/Pal.PalGameWorldSettings]
+OptionSettings=(AdminPassword="actual-admin-secret",ServerPassword="actual-join-secret")`
+	if err := os.WriteFile(settingsPath, []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := json.MarshalIndent(AppConfig{Language: "zh-CN", Instances: []ServerInstance{instance}}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.Find(instance.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.AdminPassword != "actual-admin-secret" || recovered.ServerPassword != "actual-join-secret" {
+		t.Fatalf("recovered credentials = %#v", recovered)
+	}
+	persisted := mustReadFile(t, filepath.Join(home, "config.json"))
+	if bytes.Contains(persisted, []byte("actual-admin-secret")) || bytes.Contains(persisted, []byte("actual-join-secret")) {
+		t.Fatalf("recovered credentials were stored as plaintext: %s", persisted)
+	}
+	if !bytes.Contains(persisted, []byte("encryptedAdminPassword")) || !bytes.Contains(persisted, []byte("encryptedServerPassword")) {
+		t.Fatalf("recovered encrypted fields are missing: %s", persisted)
+	}
+}
+
 func TestStoreCanClearEncryptedPasswordsFromPublicInstance(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PALSERVER_LAUNCHER_HOME", home)

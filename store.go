@@ -30,7 +30,56 @@ func NewStore() (*Store, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+	if recovered, warnings := recoverConfigPasswordsFromWorldSettings(&s.config); recovered {
+		s.warnings = append(s.warnings, warnings...)
+		if err := s.saveLocked(); err != nil {
+			return nil, fmt.Errorf("persist recovered server passwords: %w", err)
+		}
+	}
 	return s, nil
+}
+
+// recoverInstancePasswordsFromWorldSettings repairs credentials that may be
+// absent from an older launcher config. PalWorldSettings.ini is the value the
+// running server actually authenticates against, so it is the safest local
+// fallback for REST and RCON access.
+func recoverInstancePasswordsFromWorldSettings(instance *ServerInstance) bool {
+	if instance == nil || strings.TrimSpace(instance.RootPath) == "" {
+		return false
+	}
+	path, err := worldSettingsPath(*instance)
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	values := parseWorldSettingValues(string(data))
+	recovered := false
+	if instance.AdminPassword == "" && values["AdminPassword"] != "" {
+		instance.AdminPassword = values["AdminPassword"]
+		instance.EncryptedAdminPassword = ""
+		recovered = true
+	}
+	if instance.ServerPassword == "" && values["ServerPassword"] != "" {
+		instance.ServerPassword = values["ServerPassword"]
+		instance.EncryptedServerPassword = ""
+		recovered = true
+	}
+	return recovered
+}
+
+func recoverConfigPasswordsFromWorldSettings(config *AppConfig) (bool, []string) {
+	recovered := false
+	warnings := make([]string, 0)
+	for index := range config.Instances {
+		if recoverInstancePasswordsFromWorldSettings(&config.Instances[index]) {
+			recovered = true
+			warnings = append(warnings, fmt.Sprintf("已从服务器实际配置恢复“%s”的管理凭据", config.Instances[index].Name))
+		}
+	}
+	return recovered, warnings
 }
 
 func decodeAppConfig(data []byte) (AppConfig, error) {
